@@ -1,0 +1,109 @@
+{
+  "model": "model41",
+  "inspections": [
+    {
+      "name": "Filter drier",
+      "description": "Check Lable",
+      "image_path": "img/crop_1776092105819.jpg",
+      "image_paths": [
+        "img/crop_1776092105819.jpg",
+        "img/crop_1776304020500.jpg",
+        "img/crop_1776304037803.jpg",
+        "img/crop_1776304056280.jpg",
+        "img/crop_1776304077897.jpg",
+        "img/crop_1776308127087.jpg",
+        "img/crop_1776308165599.jpg",
+        "img/crop_1776308216342.jpg",
+        "img/crop_1776308239970.jpg",
+        "img/crop_1776308270286.jpg",
+        "img/crop_1776308277425.jpg",
+        "img/crop_1776308295884.jpg",
+        "img/crop_1776308306561.jpg",
+        "img/crop_1776308330279.jpg",
+        "img/crop_1776308372181.jpg",
+        "img/crop_1776308384130.jpg",
+        "img/crop_1776308400480.jpg",
+        "img/crop_1776308414491.jpg",
+        "img/crop_1776308425205.jpg",
+        "img/crop_1776308444213.jpg",
+        "img/crop_1776308459137.jpg",
+        "img/crop_1776308483099.jpg",
+        "img/crop_1776313972933.jpg",
+        "img/crop_1776314005365.jpg"
+      ],
+      "crop_roi": [
+        183,
+        1204,
+        331,
+        298
+      ],
+      "source_image": "E:/99IS/B1F2/image/B1F2\\37.bmp"
+    },
+    {
+      "name": "Check valve",
+      "description": "Check Lable",
+      "image_path": "img/crop_1776104731370.jpg",
+      "image_paths": [
+        "img/crop_1776104731370.jpg",
+        "img/crop_1776304026605.jpg",
+        "img/crop_1776304042339.jpg",
+        "img/crop_1776304063810.jpg",
+        "img/crop_1776304071203.jpg",
+        "img/crop_1776308132199.jpg",
+        "img/crop_1776308170205.jpg",
+        "img/crop_1776308200638.jpg",
+        "img/crop_1776308212315.jpg",
+        "img/crop_1776308262355.jpg",
+        "img/crop_1776308310954.jpg",
+        "img/crop_1776308318351.jpg",
+        "img/crop_1776308336210.jpg",
+        "img/crop_1776308347507.jpg",
+        "img/crop_1776308355231.jpg",
+        "img/crop_1776308376329.jpg",
+        "img/crop_1776308390952.jpg",
+        "img/crop_1776308405170.jpg",
+        "img/crop_1776308418075.jpg",
+        "img/crop_1776308430465.jpg",
+        "img/crop_1776308436575.jpg",
+        "img/crop_1776308451626.jpg",
+        "img/crop_1776308487442.jpg",
+        "img/crop_1776407547110.jpg"
+      ],
+      "crop_roi": [
+        696,
+        2011,
+        229,
+        287
+      ],
+      "source_image": "E:/99IS/B1F2/image/B1F2\\101.bmp"
+    },
+    {
+      "name": "Nut Point1",
+      "description": "Check Nut Point1",
+      "image_path": "img/crop_1776408723006.jpg",
+      "image_paths": [
+        "img/crop_1776408723006.jpg",
+        "img/crop_1776408809442.jpg",
+        "img/crop_1776408820608.jpg",
+        "img/crop_1776408832164.jpg",
+        "img/crop_1776408842127.jpg",
+        "img/crop_1776408862222.jpg",
+        "img/crop_1776408869460.jpg",
+        "img/crop_1776408878043.jpg",
+        "img/crop_1776408884296.jpg",
+        "img/crop_1776408895868.jpg",
+        "img/crop_1776408904520.jpg",
+        "img/crop_1776408914109.jpg",
+        "img/crop_1776408922004.jpg",
+        "img/crop_1776408929866.jpg"
+      ],
+      "crop_roi": [
+        1871,
+        1291,
+        101,
+        127
+      ],
+      "source_image": "E:/99IS/B1F2/image/B1F2\\22.bmp"
+    }
+  ]
+}

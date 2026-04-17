@@ -1,0 +1,17 @@
+{
+  "model": "41",
+  "inspections": [
+    {
+      "name": "CH1",
+      "description": "Check point 1",
+      "image_path": "E:/99IS/B1F2/image/B1F2\\_crops\\crop_1776091347693.jpg",
+      "crop_roi": [
+        225,
+        1503,
+        353,
+        353
+      ],
+      "source_image": "E:/99IS/B1F2/image/B1F2/1.bmp"
+    }
+  ]
+}
