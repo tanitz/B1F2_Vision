@@ -1,4 +1,4 @@
-# O-Ring Quality Inspection Dashboard
+# Quality Inspection Dashboard
 
 แอปพลิเคชันตรวจสอบคุณภาพ O-Ring พร้อมระบบรายงานและตั้งค่า
 
