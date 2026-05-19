@@ -1349,11 +1349,370 @@ def create_settings_page():
         expand=True,
     )
 
-    #  Camera Setting panel 
+    # ── Camera Setting panel (HikRobot MVS SDK — connect by IP) ──────────────
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        import camera_manager as _cam_mod
+        _hik = _cam_mod.get_camera()
+        _cfg = _cam_mod.load_config()
+    except Exception:
+        _hik = None
+        _cfg = {}
+
+    _sdk_ready = _hik is not None and _hik.sdk_ok()
+
+    cam_status_dot  = ft.Container(width=10, height=10, border_radius=5, bgcolor="#888888")
+    cam_status_text = ft.Text(
+        "Ready" if _sdk_ready else f"SDK unavailable: {_hik.sdk_err() if _hik else 'import failed'}",
+        size=12, color="#555555",
+    )
+    cam_info_text = ft.Text("", size=11, color=theme.TEXT_SECONDARY)
+
+    def _cbtn(label, color, handler):
+        return ft.Button(
+            label, height=32,
+            style=ft.ButtonStyle(
+                bgcolor={"": color}, color={"": "#ffffff"},
+                shape=ft.RoundedRectangleBorder(radius=4),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                text_style=ft.TextStyle(size=12),
+            ),
+            on_click=handler,
+        )
+
+    def _set_status(text, color, page):
+        cam_status_text.value = text
+        cam_status_dot.bgcolor = color
+        page.update()
+
+    # ── Input fields ──────────────────────────────────────────────────────────
+    def _tf(label, val, w):
+        return ft.TextField(
+            label=label, value=str(val), width=w, text_size=12, border_radius=6,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+        )
+
+    cam_ip_field = _tf("Camera IP", _cfg.get("camera_ip", "192.168.1.64"), 260)
+
+    # ── Scanned camera list ───────────────────────────────────────────────────
+    _scan_ui      = {"selected_idx": -1}
+    cam_list_col  = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+    cam_count_lbl = ft.Text("", size=11, color="#888888")
+
+    def _build_cam_list(page=None):
+        cam_list_col.controls.clear()
+        cameras = _hik.cameras if _hik else []
+        if not cameras:
+            cam_list_col.controls.append(
+                ft.Container(
+                    content=ft.Text("No cameras — click Scan", size=12, color="#aaaaaa", italic=True),
+                    alignment=ft.Alignment(0, 0), height=50,
+                )
+            )
+            cam_count_lbl.value = ""
+        else:
+            cam_count_lbl.value = f"{len(cameras)} found"
+            for c in cameras:
+                idx    = c["index"]
+                is_sel = _scan_ui["selected_idx"] == idx
+                cam_list_col.controls.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Container(
+                                content=ft.Text(c["type"], size=10, color="#ffffff",
+                                                weight=ft.FontWeight.BOLD),
+                                bgcolor="#1565c0" if c["type"] == "GigE" else "#6a1b9a",
+                                border_radius=3,
+                                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                            ),
+                            ft.Column([
+                                ft.Text(c["name"] or "Unknown", size=12,
+                                        weight=ft.FontWeight.W_500, color=theme.TEXT_PRIMARY),
+                                ft.Text(c["ip"], size=10, color=theme.TEXT_SECONDARY),
+                            ], spacing=0, expand=True),
+                            ft.Icon(
+                                ft.Icons.RADIO_BUTTON_CHECKED if is_sel
+                                else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                                color="#1976d2" if is_sel else "#cccccc", size=18,
+                            ),
+                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        bgcolor="#e3f2fd" if is_sel else "#fafafa",
+                        border=ft.Border.all(1.5, "#1976d2" if is_sel else "#e0e0e0"),
+                        border_radius=6,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                        on_click=lambda e, i=idx: _select_cam(e, i),
+                        ink=True,
+                    )
+                )
+        if page:
+            page.update()
+
+    def _select_cam(e, idx):
+        _scan_ui["selected_idx"] = idx
+        # Fill IP field with selected camera IP
+        cameras = _hik.cameras if _hik else []
+        for c in cameras:
+            if c["index"] == idx:
+                cam_ip_field.value = c["ip"]
+                break
+        _build_cam_list(e.page)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+    def do_scan(e):
+        page = e.page
+        _set_status("Scanning network...", "#ff9800", page)
+        def _scan():
+            cameras = _hik.enum_devices() if _hik else []
+            _scan_ui["selected_idx"] = -1
+            _build_cam_list()
+            _set_status(
+                f"Found {len(cameras)} camera(s)" if cameras else "No cameras found on network",
+                "#4caf50" if cameras else "#888888",
+                page,
+            )
+        page.run_thread(_scan)
+
+    def do_connect_ip(e):
+        page = e.page
+        ip = cam_ip_field.value.strip()
+        if not ip:
+            _set_status("Enter camera IP address", "#f44336", page)
+            return
+        _set_status(f"Connecting to {ip}...", "#ff9800", page)
+        def _conn():
+            ok, msg = _hik.connect_by_ip(ip) if _hik else (False, "SDK not available")
+            cam_info_text.value = ""
+            if ok:
+                try: _cam_mod.save_config({"camera_ip": ip, "net_ip": ""})
+                except Exception: pass
+            _set_status(msg, "#4caf50" if ok else "#f44336", page)
+        page.run_thread(_conn)
+
+    def do_connect_scan(e):
+        page = e.page
+        idx = _scan_ui["selected_idx"]
+        if idx < 0:
+            _set_status("Select a camera from the list first", "#f44336", page)
+            return
+        _set_status("Connecting...", "#ff9800", page)
+        def _conn():
+            ok, msg = _hik.connect_by_index(idx) if _hik else (False, "SDK not available")
+            _set_status(msg, "#4caf50" if ok else "#f44336", page)
+        page.run_thread(_conn)
+
+    def do_disconnect(e):
+        if _hik:
+            _hik.disconnect()
+        cam_info_text.value = ""
+        _set_status("Disconnected", "#888888", e.page)
+
+    # ── Parameters ────────────────────────────────────────────────────────────
+    exp_field  = _tf("Exposure (µs)", "10000", 160)
+    gain_field = _tf("Gain (dB)",     "1.00",  160)
+    fps_field  = _tf("Frame Rate",    "25.0",  160)
+    trig_dd    = ft.Dropdown(
+        label="Trigger Mode", width=160, text_size=12, value="OFF",
+        options=[ft.dropdown.Option("OFF"), ft.dropdown.Option("ON")],
+        border_radius=6,
+        content_padding=ft.Padding.only(left=10, right=0, top=4, bottom=4),
+    )
+
+    def do_get_params(e):
+        if not _hik or not _hik.connected:
+            _set_status("Not connected", "#f44336", e.page)
+            return
+        p = _hik.get_params()
+        if p:
+            exp_field.value  = f"{p['exposure']:.0f}"
+            gain_field.value = f"{p['gain']:.2f}"
+            fps_field.value  = f"{p['frame_rate']:.1f}"
+            _set_status("Parameters read", "#4caf50", e.page)
+        else:
+            _set_status("Failed to read parameters", "#f44336", e.page)
+
+    def do_set_params(e):
+        page = e.page
+        if not _hik or not _hik.connected:
+            _set_status("Not connected", "#f44336", page)
+            return
+        try:
+            exp  = float(exp_field.value  or "10000")
+            gain = float(gain_field.value or "1.0")
+            fps  = float(fps_field.value  or "25.0")
+            trig = trig_dd.value == "ON"
+        except ValueError:
+            _set_status("Invalid parameter value", "#f44336", page)
+            return
+        _set_status("Applying...", "#ff9800", page)
+        def _apply():
+            ok, msg = _hik.set_params(exposure=exp, gain=gain, frame_rate=fps, trigger_on=trig)
+            _set_status(msg, "#4caf50" if ok else "#f44336", page)
+        page.run_thread(_apply)
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+    _PREV_H = 460
+    prev_placeholder = ft.Text("No image — click Grab Frame", size=14, color="#aaaaaa", italic=True)
+    prev_img         = ft.Image(src="placeholder.png", visible=False, fit="contain")
+
+    def do_grab(e):
+        page = e.page
+        if not _hik or not _hik.connected:
+            _set_status("Not connected", "#f44336", page)
+            return
+        _set_status("Grabbing frame...", "#ff9800", page)
+        def _grab():
+            frame = _hik.grab_one()
+            if frame is not None:
+                import base64 as _b64
+                h, w = frame.shape[:2]
+                scale = min(_PREV_H / h, 1.0)
+                dw, dh = int(w * scale), int(h * scale)
+                disp = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_AREA)
+                _, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                prev_img.src     = f"data:image/jpeg;base64,{_b64.b64encode(buf).decode()}"
+                prev_img.width   = dw
+                prev_img.height  = dh
+                prev_img.visible = True
+                prev_placeholder.visible = False
+                _set_status(f"Frame: {w}×{h}", "#4caf50", page)
+            else:
+                _set_status("Grab failed — check connection", "#f44336", page)
+        page.run_thread(_grab)
+
+    _build_cam_list()
+
     camera_setting_view = ft.Container(
-        content=ft.Text("CAMERA SETTING - pending design", color=theme.TEXT_PRIMARY, size=14),
+        content=ft.Row(
+            [
+                # ── Left: controls ────────────────────────────────────────────
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            # Status bar
+                            ft.Container(
+                                content=ft.Row(
+                                    [cam_status_dot, cam_status_text,
+                                     ft.Container(expand=True), cam_info_text],
+                                    spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                bgcolor="#f5f5f5", border_radius=6,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                            ),
+
+                            # Connect by IP card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("CONNECT BY IP", size=12,
+                                            weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
+                                    cam_ip_field,
+                                    ft.Row([
+                                        _cbtn("Connect", "#1976d2", do_connect_ip),
+                                        _cbtn("Disconnect", "#d32f2f", do_disconnect),
+                                    ], spacing=6),
+                                ], spacing=10),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+
+                            # Scan card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Text("SCAN NETWORK", size=12,
+                                                weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
+                                        ft.Container(expand=True),
+                                        cam_count_lbl,
+                                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    ft.Container(
+                                        content=cam_list_col, height=140,
+                                        border=ft.Border.all(1, "#e0e0e0"),
+                                        border_radius=6, padding=6,
+                                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                    ),
+                                    ft.Row([
+                                        _cbtn("Scan", "#607d8b", do_scan),
+                                        _cbtn("Connect Selected", "#1976d2", do_connect_scan),
+                                    ], spacing=6),
+                                ], spacing=8),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+
+                            # Parameters card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("PARAMETERS", size=12,
+                                            weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
+                                    ft.Row([exp_field,  gain_field], spacing=8),
+                                    ft.Row([fps_field,  trig_dd],   spacing=8),
+                                    ft.Row([
+                                        _cbtn("Read",  "#607d8b", do_get_params),
+                                        _cbtn("Apply", "#43a047", do_set_params),
+                                    ], spacing=6),
+                                ], spacing=10),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                    width=430,
+                    padding=ft.Padding.all(12),
+                ),
+
+                # ── Right: preview ────────────────────────────────────────────
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Row([
+                                ft.Text("PREVIEW", size=12, weight=ft.FontWeight.BOLD,
+                                        color=theme.TEXT_PRIMARY),
+                                ft.Container(expand=True),
+                                _cbtn("Grab Frame", "#f57c00", do_grab),
+                            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Container(
+                                content=ft.Stack([
+                                    ft.Container(
+                                        content=prev_placeholder,
+                                        expand=True,
+                                        alignment=ft.Alignment(0, 0),
+                                        bgcolor="#f5f5f5",
+                                    ),
+                                    prev_img,
+                                ]),
+                                expand=True,
+                                border=ft.Border.all(1, "#cccccc"),
+                                border_radius=8,
+                                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                bgcolor="#f5f5f5",
+                                alignment=ft.Alignment(0, 0),
+                            ),
+                        ],
+                        spacing=8,
+                        expand=True,
+                    ),
+                    expand=True,
+                    padding=ft.Padding.all(12),
+                ),
+            ],
+            spacing=0,
+            expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        ),
         expand=True,
-        padding=12,
+        bgcolor=theme.BG_COLOR,
     )
 
     def show_tab(tab):
