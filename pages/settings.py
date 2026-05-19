@@ -1,6 +1,7 @@
 """
 Settings Page
 """
+import asyncio
 import base64
 import flet as ft
 import cv2
@@ -9,10 +10,57 @@ import numpy as np
 import os
 import threading
 import time
-import tkinter as tk
-from tkinter import filedialog
 from config import theme
 from fpm_matching import match_fpm, draw_fpm_match, crop_fpm_region
+
+
+def _put_label(img, text, x, y, bg=(0, 0, 0), fg=(255, 255, 255), scale=0.85, thick=2):
+    (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    cv2.rectangle(img, (x - 2, y - th - 4), (x + tw + 4, y + bl + 2), bg, -1)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, fg, thick, cv2.LINE_AA)
+
+
+def _make_thumb_widget(b64, w, h, border_color, border_r, crops_list, thumbs_row, count_label, count_suffix):
+    """Thumbnail with X button to delete."""
+    widget_ref = [None]
+
+    def on_delete(e):
+        if widget_ref[0] in thumbs_row.controls:
+            idx = thumbs_row.controls.index(widget_ref[0])
+            thumbs_row.controls.remove(widget_ref[0])
+            if 0 <= idx < len(crops_list):
+                crops_list.pop(idx)
+            count_label.value = f"{len(crops_list)} {count_suffix}"
+            e.control.page.update()
+
+    del_btn = ft.Container(
+        content=ft.Text("✕", size=10, color="#ffffff", weight=ft.FontWeight.BOLD),
+        width=16, height=16,
+        bgcolor="#e53935",
+        border_radius=8,
+        alignment=ft.Alignment(0, 0),
+        on_click=on_delete,
+        right=0, top=0,
+    )
+
+    widget = ft.Stack(
+        [
+            ft.Container(
+                content=ft.Image(
+                    src=f"data:image/jpeg;base64,{b64}",
+                    width=w, height=h, fit="cover",
+                    border_radius=ft.BorderRadius.all(border_r),
+                ),
+                border=ft.Border.all(2, border_color),
+                border_radius=border_r + 1,
+            ),
+            del_btn,
+        ],
+        width=w + 4,
+        height=h + 4,
+    )
+    widget_ref[0] = widget
+    return widget
 
 
 def create_settings_page():
@@ -40,36 +88,37 @@ def create_settings_page():
             bgcolor={"": theme.SIDEBAR_ITEM_ACTIVE if active else "#e0e0e0"},
             color={"": "#ffffff" if active else "#333333"},
             shape=ft.RoundedRectangleBorder(radius=0),
-            padding=ft.padding.symmetric(horizontal=16, vertical=8),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=8),
         )
 
-    btn_create = ft.ElevatedButton("CREATE MODEL", height=34, style=tab_style(True))
-    btn_camera = ft.ElevatedButton("CAMERA SETTING", height=34, style=tab_style(False))
+    btn_create = ft.Button("CREATE MODEL", height=34, style=tab_style(True))
+    btn_camera = ft.Button("CAMERA SETTING", height=34, style=tab_style(False))
 
     #  Content panels 
-    content_area = ft.Container(expand=True, padding=ft.padding.only(left=12, right=12, bottom=12))
+    content_area = ft.Container(expand=True, padding=ft.Padding.only(left=12, right=12, bottom=12))
 
     #  Inspection rows 
     inspection_list = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
     inspection_counter = {"value": 0}
-    image_state = {"path": "", "files": [], "index": -1, "cv_img": None, "scale": 1.0, "act_w": 320, "act_h": 570}
+    image_state = {"path": "", "files": [], "web_files": [], "index": -1, "cv_img": None, "scale": 1.0, "act_w": 320, "act_h": 570}
     image_counter_text = ft.Text("", size=12, color=theme.TEXT_SECONDARY)
     inspection_data = []
-    crop_state = {"active": False, "target": None, "start_x": 0, "start_y": 0, "cur_x": 0, "cur_y": 0}
+    crop_state = {"active": False, "target": None, "start_x": 0, "start_y": 0, "cur_x": 0, "cur_y": 0, "mode": "crop", "dragging_corner": None, "fixed_x": 0, "fixed_y": 0}
 
     def make_inspection_row():
         inspection_counter["value"] += 1
         idx = inspection_counter["value"]
         row_ref = {"row": None}
         crop_ref = {"roi": None, "img_path": None, "source": None}
-        crops_list = []  # list of {"roi":..., "img_path":..., "source":...}
+        crops_list = []      # OK templates
+        ng_crops_list = []   # NG templates
 
         preview_placeholder = ft.Text("IMG", color="#2196f3", weight=ft.FontWeight.BOLD, size=12)
         preview_img = ft.Image(src="placeholder.png", visible=False, fit="contain", width=280, height=160)
         preview_container = ft.Container(
             content=ft.Stack([preview_placeholder, preview_img]),
             width=280, height=160,
-            border=ft.border.all(1, "#aaaaaa"),
+            border=ft.Border.all(1, "#aaaaaa"),
             border_radius=4,
             alignment=ft.Alignment(0, 0),
             bgcolor="#ffffff",
@@ -78,24 +127,79 @@ def create_settings_page():
 
         # thumbnails row for multi-crop
         thumbs_row = ft.Row(spacing=4, scroll=ft.ScrollMode.AUTO, height=50, width=280)
+        ng_thumbs_row = ft.Row(spacing=4, scroll=ft.ScrollMode.AUTO, height=50, width=280)
 
-        name_field = ft.TextField(height=28, text_size=12, content_padding=ft.padding.symmetric(horizontal=6, vertical=2), expand=True)
-        desc_field = ft.TextField(height=28, text_size=12, content_padding=ft.padding.symmetric(horizontal=6, vertical=2), expand=True)
+        name_field = ft.TextField(height=28, text_size=12, content_padding=ft.Padding.symmetric(horizontal=6, vertical=2), expand=True)
+        desc_field = ft.TextField(height=28, text_size=12, content_padding=ft.Padding.symmetric(horizontal=6, vertical=2), expand=True)
 
-        crop_count_label = ft.Text("0 templates", size=10, color="#888888")
+        crop_count_label = ft.Text("0 OK", size=10, color="#888888")
+        ng_crop_count_label = ft.Text("0 NG", size=10, color="#f44336")
 
+        roi_label = ft.Text("ROI: not set", size=10, color="#888888")
         data_entry = {"name_field": name_field, "desc_field": desc_field, "crop_ref": crop_ref,
                       "crops_list": crops_list, "thumbs_row": thumbs_row,
                       "crop_count_label": crop_count_label,
-                      "row": None, "preview_img": preview_img, "preview_placeholder": preview_placeholder}
+                      "ng_crops_list": ng_crops_list, "ng_thumbs_row": ng_thumbs_row,
+                      "ng_crop_count_label": ng_crop_count_label,
+                      "row": None, "preview_img": preview_img, "preview_placeholder": preview_placeholder,
+                      "search_roi": None, "roi_label": roi_label}
 
         def crop_clicked(e):
             if image_state.get("cv_img") is None:
                 return
             crop_state["active"] = True
             crop_state["target"] = data_entry
+            crop_state["mode"] = "crop"
             selection_rect.visible = False
+            _hide_handles()
+            crop_label.content.value = "CROP OK - drag to select"
+            crop_label.bgcolor = "#e53935"
             crop_label.visible = True
+            e.page.update()
+
+        def crop_ng_clicked(e):
+            if image_state.get("cv_img") is None:
+                return
+            crop_state["active"] = True
+            crop_state["target"] = data_entry
+            crop_state["mode"] = "ng_crop"
+            selection_rect.visible = False
+            _hide_handles()
+            crop_label.content.value = "CROP NG - drag to select"
+            crop_label.bgcolor = "#b71c1c"
+            crop_label.visible = True
+            e.page.update()
+
+        def roi_clicked(e):
+            if image_state.get("cv_img") is None:
+                return
+            existing = data_entry.get("search_roi")
+            if existing:
+                ox, oy, ow, oh = existing
+                scale = image_state.get("scale", 1.0)
+                dx, dy, dw, dh = ox * scale, oy * scale, ow * scale, oh * scale
+                selection_rect.left = dx
+                selection_rect.top = dy
+                selection_rect.width = dw
+                selection_rect.height = dh
+                selection_rect.visible = True
+                _update_handles(dx, dy, dw, dh)
+                crop_state["active"] = True
+                crop_state["target"] = data_entry
+                crop_state["mode"] = "roi_adjust"
+                crop_state["dragging_corner"] = None
+                crop_label.content.value = "ROI - drag corners to adjust"
+                crop_label.bgcolor = "#1565c0"
+                crop_label.visible = True
+            else:
+                crop_state["active"] = True
+                crop_state["target"] = data_entry
+                crop_state["mode"] = "roi"
+                selection_rect.visible = False
+                _hide_handles()
+                crop_label.content.value = "ROI MODE - drag to set search area"
+                crop_label.bgcolor = "#1565c0"
+                crop_label.visible = True
             e.page.update()
 
         row = ft.Row(
@@ -105,16 +209,37 @@ def create_settings_page():
                     [
                         preview_container,
                         ft.Row([
-                            ft.ElevatedButton("Crop", height=28,
+                            ft.Button("Crop OK", height=28,
                                 style=ft.ButtonStyle(
                                     bgcolor={"":"#2196f3"}, color={"":"#ffffff"},
                                     shape=ft.RoundedRectangleBorder(radius=4),
-                                    padding=ft.padding.symmetric(horizontal=8, vertical=2),
+                                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
                                 ),
                                 on_click=crop_clicked),
-                            crop_count_label,
+                            ft.Button("Crop NG", height=28,
+                                style=ft.ButtonStyle(
+                                    bgcolor={"":"#b71c1c"}, color={"":"#ffffff"},
+                                    shape=ft.RoundedRectangleBorder(radius=4),
+                                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                ),
+                                on_click=crop_ng_clicked),
+                            ft.Button("Set ROI", height=28,
+                                style=ft.ButtonStyle(
+                                    bgcolor={"":"#f57c00"}, color={"":"#ffffff"},
+                                    shape=ft.RoundedRectangleBorder(radius=4),
+                                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                ),
+                                on_click=roi_clicked),
                         ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        thumbs_row,
+                        ft.Row([crop_count_label, ft.Text("  |", size=10, color="#cccccc"), ng_crop_count_label,
+                                ft.Text("  |", size=10, color="#cccccc"), roi_label],
+                               spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ft.Container(content=thumbs_row,
+                                     border=ft.Border.all(1, "#4caf50"),
+                                     border_radius=4, padding=2),
+                        ft.Container(content=ng_thumbs_row,
+                                     border=ft.Border.all(1, "#f44336"),
+                                     border_radius=4, padding=2, visible=True),
                         ft.Row([
                             ft.Text("Name", size=11, width=100),
                             name_field,
@@ -162,18 +287,18 @@ def create_settings_page():
             bgcolor={"": color},
             color={"": "#ffffff"},
             shape=ft.RoundedRectangleBorder(radius=4),
-            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
         )
 
     #  Right action buttons 
     right_btns = ft.Column(
         [
-            ft.ElevatedButton("Connect camera", width=120, height=34, style=btn_style_sm("#f57c00")),
-            ft.ElevatedButton("Trigger Image",  width=120, height=34, style=btn_style_sm("#f57c00")),
-            ft.ElevatedButton("Open File",      width=120, height=34, style=btn_style_sm("#f57c00")),
-            ft.ElevatedButton("Next",           width=120, height=34, style=btn_style_sm("#f57c00")),
-            ft.ElevatedButton("Previous",       width=120, height=34, style=btn_style_sm("#f57c00")),
-            ft.ElevatedButton("Test",           width=120, height=34, style=btn_style_sm("#f57c00")),
+            ft.Button("Connect camera", width=120, height=38, style=btn_style_sm("#f57c00")),
+            ft.Button("Trigger Image",  width=120, height=38, style=btn_style_sm("#f57c00")),
+            ft.Button("Open File",      width=120, height=38, style=btn_style_sm("#f57c00")),
+            ft.Button("Next",           width=120, height=38, style=btn_style_sm("#f57c00")),
+            ft.Button("Previous",       width=120, height=38, style=btn_style_sm("#f57c00")),
+            ft.Button("Test",           width=120, height=38, style=btn_style_sm("#f57c00")),
         ],
         spacing=6,
     )
@@ -187,27 +312,68 @@ def create_settings_page():
     large_img_placeholder = ft.Text("IMG", color="#2196f3", weight=ft.FontWeight.BOLD, size=18)
     selection_rect = ft.Container(
         left=0, top=0, width=0, height=0,
-        border=ft.border.all(2, "#ff0000"),
+        border=ft.Border.all(2, "#ff0000"),
         visible=False,
     )
     crop_label = ft.Container(
         content=ft.Text("CROP MODE - drag to select", color="#ffffff", size=11, weight=ft.FontWeight.BOLD),
         bgcolor="#e53935",
-        padding=ft.padding.symmetric(horizontal=8, vertical=2),
+        padding=ft.Padding.symmetric(horizontal=8, vertical=2),
         border_radius=4,
         top=4, left=4,
         visible=False,
     )
 
+    HANDLE_SIZE = 14
+    roi_handles = [
+        ft.Container(
+            left=0, top=0, width=HANDLE_SIZE, height=HANDLE_SIZE,
+            bgcolor="#ff0000",
+            border=ft.Border.all(2, "#ffffff"),
+            border_radius=2,
+            visible=False,
+        )
+        for _ in range(4)
+    ]
+
+    def _update_handles(x, y, w, h):
+        half = HANDLE_SIZE / 2
+        positions = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+        for i, (hx, hy) in enumerate(positions):
+            roi_handles[i].left = hx - half
+            roi_handles[i].top = hy - half
+            roi_handles[i].visible = True
+
+    def _hide_handles():
+        for h in roi_handles:
+            h.visible = False
+
     def on_pan_start(e):
         if not crop_state["active"]:
             return
-        crop_state["start_x"] = e.local_position.x
-        crop_state["start_y"] = e.local_position.y
-        crop_state["cur_x"] = e.local_position.x
-        crop_state["cur_y"] = e.local_position.y
-        selection_rect.left = e.local_position.x
-        selection_rect.top = e.local_position.y
+        sx, sy = e.local_position.x, e.local_position.y
+        if crop_state.get("mode") == "roi_adjust":
+            rx = selection_rect.left or 0
+            ry = selection_rect.top or 0
+            rw = selection_rect.width or 0
+            rh = selection_rect.height or 0
+            corners = [(rx, ry), (rx + rw, ry), (rx, ry + rh), (rx + rw, ry + rh)]
+            for i, (cx, cy) in enumerate(corners):
+                if abs(sx - cx) <= 18 and abs(sy - cy) <= 18:
+                    crop_state["dragging_corner"] = i
+                    crop_state["fixed_x"] = rx + rw if i in (0, 2) else rx
+                    crop_state["fixed_y"] = ry + rh if i in (0, 1) else ry
+                    return
+            # ไม่ได้แตะมุม → วาดใหม่
+            crop_state["mode"] = "roi"
+            crop_state["dragging_corner"] = None
+            _hide_handles()
+        crop_state["start_x"] = sx
+        crop_state["start_y"] = sy
+        crop_state["cur_x"] = sx
+        crop_state["cur_y"] = sy
+        selection_rect.left = sx
+        selection_rect.top = sy
         selection_rect.width = 0
         selection_rect.height = 0
         selection_rect.visible = True
@@ -216,16 +382,32 @@ def create_settings_page():
     def on_pan_update(e):
         if not crop_state["active"]:
             return
-        crop_state["cur_x"] = e.local_position.x
-        crop_state["cur_y"] = e.local_position.y
-        sx, sy = crop_state["start_x"], crop_state["start_y"]
-        cx, cy = crop_state["cur_x"], crop_state["cur_y"]
-        x = max(0, min(sx, cx))
-        y = max(0, min(sy, cy))
         act_w = image_state["act_w"]
         act_h = image_state["act_h"]
-        w = min(abs(cx - sx), act_w - x)
-        h = min(abs(cy - sy), act_h - y)
+        px, py = e.local_position.x, e.local_position.y
+        if crop_state.get("mode") == "roi_adjust" and crop_state.get("dragging_corner") is not None:
+            fx = crop_state["fixed_x"]
+            fy = crop_state["fixed_y"]
+            px = max(0, min(px, act_w))
+            py = max(0, min(py, act_h))
+            x = min(fx, px)
+            y = min(fy, py)
+            w = abs(px - fx)
+            h = abs(py - fy)
+            selection_rect.left = x
+            selection_rect.top = y
+            selection_rect.width = w
+            selection_rect.height = h
+            _update_handles(x, y, w, h)
+            e.page.update()
+            return
+        crop_state["cur_x"] = px
+        crop_state["cur_y"] = py
+        sx, sy = crop_state["start_x"], crop_state["start_y"]
+        x = max(0, min(sx, px))
+        y = max(0, min(sy, py))
+        w = min(abs(px - sx), act_w - x)
+        h = min(abs(py - sy), act_h - y)
         selection_rect.left = x
         selection_rect.top = y
         selection_rect.width = w
@@ -243,6 +425,7 @@ def create_settings_page():
         rw = selection_rect.width or 0
         rh = selection_rect.height or 0
         if rw < 5 or rh < 5:
+            _hide_handles()
             selection_rect.visible = False
             crop_state["active"] = False
             crop_state["target"] = None
@@ -260,6 +443,31 @@ def create_settings_page():
         ow = min(ow, img_w - ox)
         oh = min(oh, img_h - oy)
         if ow < 2 or oh < 2:
+            _hide_handles()
+            selection_rect.visible = False
+            crop_state["active"] = False
+            crop_state["target"] = None
+            crop_label.visible = False
+            e.page.update()
+            return
+        if crop_state.get("mode") == "roi_adjust":
+            crop_state["dragging_corner"] = None
+            target = crop_state["target"]
+            target["search_roi"] = (ox, oy, ow, oh)
+            if "roi_label" in target:
+                target["roi_label"].value = f"ROI: ({ox},{oy}) {ow}×{oh}"
+            _hide_handles()
+            selection_rect.visible = False
+            crop_state["active"] = False
+            crop_state["target"] = None
+            crop_label.visible = False
+            e.page.update()
+            return
+        if crop_state.get("mode") == "roi":
+            target = crop_state["target"]
+            target["search_roi"] = (ox, oy, ow, oh)
+            if "roi_label" in target:
+                target["roi_label"].value = f"ROI: ({ox},{oy}) {ow}×{oh}"
             selection_rect.visible = False
             crop_state["active"] = False
             crop_state["target"] = None
@@ -267,7 +475,10 @@ def create_settings_page():
             e.page.update()
             return
         cropped = cv_img[oy:oy+oh, ox:ox+ow]
-        crop_dir = os.path.join(os.path.dirname(image_state["path"]), "_crops")
+        crop_dir = os.path.join(
+            os.path.dirname(image_state["path"]) if image_state["path"] and os.path.isabs(image_state["path"]) else BASE_DIR,
+            "_crops"
+        )
         os.makedirs(crop_dir, exist_ok=True)
         crop_path = os.path.join(crop_dir, f"crop_{int(time.time()*1000)}.jpg")
         cv2.imwrite(crop_path, cropped)
@@ -276,22 +487,35 @@ def create_settings_page():
         target["crop_ref"]["img_path"] = crop_path
         target["crop_ref"]["source"] = image_state["path"]
         # append to multi-crop list
-        target["crops_list"].append({
-            "roi": (ox, oy, ow, oh),
-            "img_path": crop_path,
-            "source": image_state["path"],
-        })
         _, buf = cv2.imencode(".jpg", cropped, [cv2.IMWRITE_JPEG_QUALITY, 90])
         b64 = base64.b64encode(buf).decode()
-        target["preview_img"].src = f"data:image/jpeg;base64,{b64}"
-        target["preview_img"].visible = True
-        target["preview_placeholder"].visible = False
-        # add thumbnail
-        target["thumbs_row"].controls.append(
-            ft.Image(src=f"data:image/jpeg;base64,{b64}", width=44, height=44, fit="cover",
-                     border_radius=ft.border_radius.all(3))
-        )
-        target["crop_count_label"].value = f"{len(target['crops_list'])} templates"
+        if crop_state.get("mode") == "ng_crop":
+            target["ng_crops_list"].append({
+                "roi": (ox, oy, ow, oh),
+                "img_path": crop_path,
+                "source": image_state["path"],
+            })
+            target["ng_thumbs_row"].controls.append(
+                _make_thumb_widget(b64, 40, 40, "#f44336", 2,
+                                   target["ng_crops_list"], target["ng_thumbs_row"],
+                                   target["ng_crop_count_label"], "NG")
+            )
+            target["ng_crop_count_label"].value = f"{len(target['ng_crops_list'])} NG"
+        else:
+            target["crops_list"].append({
+                "roi": (ox, oy, ow, oh),
+                "img_path": crop_path,
+                "source": image_state["path"],
+            })
+            target["preview_img"].src = f"data:image/jpeg;base64,{b64}"
+            target["preview_img"].visible = True
+            target["preview_placeholder"].visible = False
+            target["thumbs_row"].controls.append(
+                _make_thumb_widget(b64, 44, 44, "#4caf50", 3,
+                                   target["crops_list"], target["thumbs_row"],
+                                   target["crop_count_label"], "OK")
+            )
+            target["crop_count_label"].value = f"{len(target['crops_list'])} OK"
         selection_rect.visible = False
         crop_state["active"] = False
         crop_state["target"] = None
@@ -300,7 +524,7 @@ def create_settings_page():
 
     large_img_container = ft.Container(
         content=ft.GestureDetector(
-            content=ft.Stack([large_img_placeholder, large_img, selection_rect, crop_label]),
+            content=ft.Stack([large_img_placeholder, large_img, selection_rect, *roi_handles, crop_label]),
             on_pan_start=on_pan_start,
             on_pan_update=on_pan_update,
             on_pan_end=on_pan_end,
@@ -326,7 +550,7 @@ def create_settings_page():
         width=280,
         height=DISP_H + 30,
         padding=4,
-        border=ft.border.only(right=ft.BorderSide(1, "#aaaaaa")),
+        border=ft.Border.only(right=ft.BorderSide(1, "#aaaaaa")),
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
     )
 
@@ -334,7 +558,7 @@ def create_settings_page():
     model_panel_col = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
     model_panel = ft.Container(
         content=model_panel_col,
-        width=350,
+        width=385,
         height=DISP_H + 30,
         padding=4,
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -362,7 +586,7 @@ def create_settings_page():
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     expand=True,
-                    border=ft.border.only(right=ft.BorderSide(1, "#aaaaaa")),
+                    border=ft.Border.only(right=ft.BorderSide(1, "#aaaaaa")),
                 ),
                 result_panel,
                 model_panel,
@@ -370,90 +594,242 @@ def create_settings_page():
             spacing=0,
             vertical_alignment=ft.CrossAxisAlignment.START,
         ),
-        border=ft.border.all(1, "#aaaaaa"),
+        border=ft.Border.all(1, "#aaaaaa"),
         border_radius=4,
         padding=4,
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
     )
 
     #  Image loader helper (cv2 resize + base64 = fast)
-    def load_image_by_path(path, page):
-        img_cv = cv2.imread(path)
-        if img_cv is not None:
-            image_state["cv_img"] = img_cv
-            h, w = img_cv.shape[:2]
-            scale = min(DISP_H / h, 1.0)
-            image_state["scale"] = scale
-            disp_w = int(w * scale)
-            disp_h = int(h * scale)
-            image_state["act_w"] = disp_w
-            image_state["act_h"] = disp_h
-            large_img.width = disp_w
-            large_img.height = disp_h
-            large_img_container.width = disp_w
-            _, buf = cv2.imencode(".jpg", img_cv, [cv2.IMWRITE_JPEG_QUALITY, 90])
-            b64 = base64.b64encode(buf).decode()
-            large_img.src = f"data:image/jpeg;base64,{b64}"
-            large_img.visible = True
-            large_img_placeholder.visible = False
-            selection_rect.visible = False
-            crop_label.visible = False
-            files = image_state["files"]
-            if files:
-                image_counter_text.value = f"{image_state['index'] + 1}/{len(files)}"
-            else:
-                image_counter_text.value = ""
-            page.update()
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    #  Open File dialog (tkinter — instant, no subprocess overhead)
-    def open_file_clicked(e):
+    def load_image_by_path(path, page, img_bytes=None):
+        print(f"[DEBUG] load_image_by_path: START - path={path is not None}, img_bytes={img_bytes is not None}")
+        try:
+            print("[DEBUG] load_image_by_path: Reading/decoding image...")
+            if img_bytes is not None:
+                print(f"[DEBUG] load_image_by_path: Decoding from bytes (size={len(img_bytes)})...")
+                raw = bytes(img_bytes) if not isinstance(img_bytes, (bytes, bytearray)) else img_bytes
+                arr = np.frombuffer(raw, np.uint8)
+                img_cv = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                print(f"[DEBUG] load_image_by_path: Decoded, shape={img_cv.shape if img_cv is not None else None}")
+            else:
+                print(f"[DEBUG] load_image_by_path: Reading from path: {path}")
+                img_cv = cv2.imread(path) if path else None
+                print(f"[DEBUG] load_image_by_path: Read, shape={img_cv.shape if img_cv is not None else None}")
+            if img_cv is not None:
+                print("[DEBUG] load_image_by_path: Image loaded successfully, processing...")
+                image_state["cv_img"] = img_cv
+                h, w = img_cv.shape[:2]
+                print(f"[DEBUG] load_image_by_path: Original size={w}x{h}")
+                scale = min(DISP_H / h, 1.0)
+                image_state["scale"] = scale
+                disp_w = int(w * scale)
+                disp_h = int(h * scale)
+                image_state["act_w"] = disp_w
+                image_state["act_h"] = disp_h
+                large_img.width = disp_w
+                large_img.height = disp_h
+                large_img_container.width = disp_w
+                # Resize to display size before encoding → much smaller base64 payload
+                print(f"[DEBUG] load_image_by_path: Resizing to {disp_w}x{disp_h}...")
+                display_img = cv2.resize(img_cv, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+                print("[DEBUG] load_image_by_path: Encoding to JPEG...")
+                _, buf = cv2.imencode(".jpg", display_img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                print(f"[DEBUG] load_image_by_path: Encoded, buffer size={len(buf)}")
+                print("[DEBUG] load_image_by_path: Encoding to base64...")
+                b64 = base64.b64encode(buf).decode()
+                print(f"[DEBUG] load_image_by_path: Base64 length={len(b64)}")
+                large_img.src = f"data:image/jpeg;base64,{b64}"
+                large_img.visible = True
+                large_img_placeholder.visible = False
+                selection_rect.visible = False
+                _hide_handles()
+                crop_label.visible = False
+                web_files = image_state.get("web_files", [])
+                files = image_state["files"]
+                if web_files:
+                    image_counter_text.value = f"{image_state['index'] + 1}/{len(web_files)}"
+                elif files:
+                    image_counter_text.value = f"{image_state['index'] + 1}/{len(files)}"
+                else:
+                    image_counter_text.value = ""
+                print("[DEBUG] load_image_by_path: Calling page.update()...")
+                page.update()
+                print("[DEBUG] load_image_by_path: page.update() completed")
+            else:
+                print("[DEBUG] load_image_by_path: Image is None, showing placeholder")
+                large_img.visible = False
+                large_img_placeholder.visible = True
+                page.update()
+        except Exception as _ex:
+            print(f"[ERROR] load_image_by_path: {_ex}")
+            import traceback
+            traceback.print_exc()
+        print("[DEBUG] load_image_by_path: EXIT")
+
+    #  Open images (multiple files)
+    _file_picker_state = {"picker": None}
+
+    async def open_images_clicked(e):
         page = e.page
-        def pick_and_load():
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            path = filedialog.askopenfilename(
-                title="Select Image",
-                initialdir=r"E:\99IS\B1F2\image\B1F2",
-                filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.gif *.webp")],
-                parent=root,
-            )
-            root.destroy()
-            if path:
-                folder = os.path.dirname(path)
-                exts = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
-                files = sorted([
-                    os.path.join(folder, f) for f in os.listdir(folder)
-                    if os.path.splitext(f)[1].lower() in exts
-                ])
-                image_state["files"] = files
-                image_state["index"] = files.index(path) if path in files else 0
-                image_state["path"] = path
-                load_image_by_path(path, page)
-        page.run_thread(pick_and_load)
+        if _file_picker_state["picker"] is None:
+            fp = ft.FilePicker()
+            page.services.append(fp)
+            page.update()
+            await asyncio.sleep(0.3)
+            _file_picker_state["picker"] = fp
+
+        picked = await _file_picker_state["picker"].pick_files(
+            dialog_title="Select Image",
+            initial_directory=os.path.join(BASE_DIR, "image"),
+            file_type=ft.FilePickerFileType.IMAGE,
+            allow_multiple=False,
+            with_data=False,
+        )
+        if not picked or not picked[0].path:
+            return
+
+        chosen_path = picked[0].path
+        folder = os.path.dirname(chosen_path)
+
+        img_exts = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+        all_paths = sorted(
+            [
+                os.path.join(folder, f)
+                for f in os.listdir(folder)
+                if os.path.splitext(f)[1].lower() in img_exts
+                and os.path.isfile(os.path.join(folder, f))
+            ],
+            key=lambda p: os.path.basename(p).lower(),
+        )
+        if not all_paths:
+            return
+
+        start_index = next(
+            (i for i, p in enumerate(all_paths) if os.path.normcase(p) == os.path.normcase(chosen_path)),
+            0,
+        )
+
+        image_state["files"] = all_paths
+        image_state["web_files"] = []
+        image_state["index"] = start_index
+        image_state["path"] = chosen_path
+        image_state["cv_img"] = None
+        image_counter_text.value = f"{start_index + 1}/{len(all_paths)}"
+        large_img_placeholder.visible = True
+        large_img.visible = False
+        page.update()
+        page.run_thread(lambda: load_image_by_path(chosen_path, page))
 
     #  Next / Previous image
     def next_image_clicked(e):
+        print("[DEBUG] next_image_clicked: START")
+        web_files = image_state.get("web_files", [])
         files = image_state["files"]
-        if files and image_state["index"] < len(files) - 1:
-            image_state["index"] += 1
-            image_state["path"] = files[image_state["index"]]
-            load_image_by_path(image_state["path"], e.page)
+        print(f"[DEBUG] next_image_clicked: web_files={len(web_files)}, files={len(files)}, current_index={image_state['index']}")
+        
+        if web_files:
+            # Web mode: load from stored FilePickerFile bytes
+            print("[DEBUG] next_image_clicked: Web mode")
+            if image_state["index"] >= len(web_files) - 1:
+                image_state["index"] = 0
+            else:
+                image_state["index"] += 1
+            print(f"[DEBUG] next_image_clicked: Web - new index={image_state['index']}")
+            
+            f = web_files[image_state["index"]]
+            if f.bytes is not None:
+                print(f"[DEBUG] next_image_clicked: Web - bytes size={len(f.bytes)}")
+                image_counter_text.value = f"{image_state['index'] + 1}/{len(web_files)}"
+                large_img_placeholder.visible = True
+                large_img.visible = False
+                print("[DEBUG] next_image_clicked: Web - calling page.update()...")
+                e.page.update()
+                print("[DEBUG] next_image_clicked: Web - starting run_thread...")
+                raw = bytes(f.bytes)
+                e.page.run_thread(lambda: load_image_by_path(None, e.page, img_bytes=raw))
+            print("[DEBUG] next_image_clicked: Web mode EXIT")
+            return
+        
+        if files:
+            # Desktop mode: load from stored file path
+            print("[DEBUG] next_image_clicked: Desktop mode")
+            if image_state["index"] >= len(files) - 1:
+                image_state["index"] = 0
+            else:
+                image_state["index"] += 1
+            print(f"[DEBUG] next_image_clicked: Desktop - new index={image_state['index']}")
+            
+            path = files[image_state["index"]]
+            image_state["path"] = path
+            print(f"[DEBUG] next_image_clicked: Desktop - path={path}")
+            image_counter_text.value = f"{image_state['index'] + 1}/{len(files)}"
+            large_img_placeholder.visible = True
+            large_img.visible = False
+            print("[DEBUG] next_image_clicked: Desktop - calling page.update()...")
+            e.page.update()
+            print("[DEBUG] next_image_clicked: Desktop - starting run_thread...")
+            e.page.run_thread(lambda: load_image_by_path(path, e.page))
+            print("[DEBUG] next_image_clicked: Desktop mode EXIT")
 
     def previous_image_clicked(e):
+        print("[DEBUG] previous_image_clicked: START")
+        web_files = image_state.get("web_files", [])
         files = image_state["files"]
-        if files and image_state["index"] > 0:
-            image_state["index"] -= 1
-            image_state["path"] = files[image_state["index"]]
-            load_image_by_path(image_state["path"], e.page)
+        print(f"[DEBUG] previous_image_clicked: web_files={len(web_files)}, files={len(files)}, current_index={image_state['index']}")
+        
+        if web_files:
+            # Web mode: load from stored FilePickerFile bytes
+            print("[DEBUG] previous_image_clicked: Web mode")
+            if image_state["index"] <= 0:
+                image_state["index"] = len(web_files) - 1
+            else:
+                image_state["index"] -= 1
+            print(f"[DEBUG] previous_image_clicked: Web - new index={image_state['index']}")
+            
+            f = web_files[image_state["index"]]
+            if f.bytes is not None:
+                print(f"[DEBUG] previous_image_clicked: Web - bytes size={len(f.bytes)}")
+                image_counter_text.value = f"{image_state['index'] + 1}/{len(web_files)}"
+                large_img_placeholder.visible = True
+                large_img.visible = False
+                print("[DEBUG] previous_image_clicked: Web - calling page.update()...")
+                e.page.update()
+                print("[DEBUG] previous_image_clicked: Web - starting run_thread...")
+                raw = bytes(f.bytes)
+                e.page.run_thread(lambda: load_image_by_path(None, e.page, img_bytes=raw))
+            print("[DEBUG] previous_image_clicked: Web mode EXIT")
+            return
+        
+        if files:
+            # Desktop mode: load from stored file path
+            print("[DEBUG] previous_image_clicked: Desktop mode")
+            if image_state["index"] <= 0:
+                image_state["index"] = len(files) - 1
+            else:
+                image_state["index"] -= 1
+            print(f"[DEBUG] previous_image_clicked: Desktop - new index={image_state['index']}")
+            
+            path = files[image_state["index"]]
+            image_state["path"] = path
+            print(f"[DEBUG] previous_image_clicked: Desktop - path={path}")
+            image_counter_text.value = f"{image_state['index'] + 1}/{len(files)}"
+            large_img_placeholder.visible = True
+            large_img.visible = False
+            print("[DEBUG] previous_image_clicked: Desktop - calling page.update()...")
+            e.page.update()
+            print("[DEBUG] previous_image_clicked: Desktop - starting run_thread...")
+            e.page.run_thread(lambda: load_image_by_path(path, e.page))
+            print("[DEBUG] previous_image_clicked: Desktop mode EXIT")
 
     #  Save template as JSON
     def save_template(e):
         model_name = (model_name_field.value or "").strip()
         if not model_name:
             return
-        # Create model folder: E:\99IS\B1F2\model\<model_name>\img
-        model_dir = os.path.join(r"E:\99IS\B1F2\model", model_name)
+        # Create model folder under project root
+        model_dir = os.path.join(BASE_DIR, "model", model_name)
         img_dir = os.path.join(model_dir, "img")
         os.makedirs(img_dir, exist_ok=True)
 
@@ -483,13 +859,25 @@ def create_settings_page():
                 if img is not None:
                     cv2.imwrite(dest, img)
                     saved_imgs.append(f"img/{fname}")
+            ng_saved_imgs = []
+            for crop_item in data.get("ng_crops_list", []):
+                cp = crop_item.get("img_path", "")
+                if cp and os.path.isfile(cp):
+                    fname = "ng_" + os.path.basename(cp)
+                    dest = os.path.join(img_dir, fname)
+                    img = cv2.imread(cp)
+                    if img is not None:
+                        cv2.imwrite(dest, img)
+                        ng_saved_imgs.append(f"img/{fname}")
             insp = {
                 "name": data["name_field"].value or "",
                 "description": data["desc_field"].value or "",
                 "image_path": saved_imgs[0] if saved_imgs else "",
                 "image_paths": saved_imgs,
+                "ng_image_paths": ng_saved_imgs,
                 "crop_roi": list(crop_ref["roi"]) if crop_ref["roi"] else [],
                 "source_image": crop_ref.get("source") or "",
+                "search_roi": list(data["search_roi"]) if data.get("search_roi") else [],
             }
             template["inspections"].append(insp)
 
@@ -497,42 +885,35 @@ def create_settings_page():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(template, f, ensure_ascii=False, indent=2)
 
+        refresh_model_dropdown()
+        model_dropdown.value = model_name
+
+        # Refresh home page model dropdown if it is registered
+        home_refresh = getattr(e.page, "_home_refresh_models", None)
+        if home_refresh:
+            home_refresh(model_name)
+
         dlg = ft.AlertDialog(
             title=ft.Text("Success"),
             content=ft.Text(f"Model \"{model_name}\" saved successfully."),
             open=True,
         )
         e.page.overlay.append(dlg)
-        refresh_model_dropdown()
         e.page.update()
 
     #  Model name field
-    model_name_field = ft.TextField(height=32, text_size=13, content_padding=ft.padding.symmetric(horizontal=8, vertical=4), expand=True)
+    model_name_field = ft.TextField(height=32, text_size=13, content_padding=ft.Padding.symmetric(horizontal=8, vertical=4), expand=True)
 
     #  Populate MODEL panel now that model_name_field exists
     model_panel_col.controls = [
         ft.Row([ft.Text("Model:", size=14, weight=ft.FontWeight.BOLD), model_name_field],
                spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ft.Row([
-            ft.ElevatedButton("ADD INSPECTION", height=32,
-                style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#222222"},
-                    shape=ft.RoundedRectangleBorder(radius=4), side=ft.BorderSide(1,"#888888")),
-                on_click=add_inspection),
-            ft.ElevatedButton("DELETE", height=32,
-                style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#e53935"},
-                    shape=ft.RoundedRectangleBorder(radius=4), side=ft.BorderSide(1,"#e53935")),
-                on_click=delete_last),
-            ft.ElevatedButton("SAVE", height=32,
-                style=ft.ButtonStyle(bgcolor={"":"#4caf50"}, color={"":"#ffffff"},
-                    shape=ft.RoundedRectangleBorder(radius=4)),
-                on_click=save_template),
-        ], spacing=8),
         ft.Container(content=inspection_list, expand=True,
-            border=ft.border.all(1,"#dddddd"), border_radius=4, padding=6),
+            border=ft.Border.all(1,"#dddddd"), border_radius=4, padding=6),
     ]
 
     #  Model dropdown for Test
-    MODEL_DIR = r"E:\99IS\B1F2\model"
+    MODEL_DIR = os.path.join(BASE_DIR, "model")
 
     def get_model_list():
         if not os.path.isdir(MODEL_DIR):
@@ -606,14 +987,46 @@ def create_settings_page():
                     # add thumbnail
                     tmpl_cv = cv2.imread(img_path)
                     if tmpl_cv is not None:
-                        _, tbuf = cv2.imencode(".jpg", tmpl_cv, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        tmpl_thumb = cv2.resize(tmpl_cv, (44, 44), interpolation=cv2.INTER_AREA)
+                        _, tbuf = cv2.imencode(".jpg", tmpl_thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
                         tb64 = base64.b64encode(tbuf).decode()
                         data_entry["thumbs_row"].controls.append(
-                            ft.Image(src=f"data:image/jpeg;base64,{tb64}", width=44, height=44,
-                                     fit="cover", border_radius=ft.border_radius.all(3))
+                            _make_thumb_widget(tb64, 44, 44, "#4caf50", 3,
+                                               data_entry["crops_list"], data_entry["thumbs_row"],
+                                               data_entry["crop_count_label"], "OK")
                         )
 
-            data_entry["crop_count_label"].value = f"{len(data_entry['crops_list'])} templates"
+            data_entry["crop_count_label"].value = f"{len(data_entry['crops_list'])} OK"
+
+            # Load NG templates
+            ng_img_paths_rel = insp.get("ng_image_paths", [])
+            for img_rel in ng_img_paths_rel:
+                img_path = os.path.join(model_base, img_rel)
+                if os.path.isfile(img_path):
+                    data_entry["ng_crops_list"].append({
+                        "roi": tuple(roi) if roi else None,
+                        "img_path": img_path,
+                        "source": insp.get("source_image", ""),
+                    })
+                    tmpl_cv = cv2.imread(img_path)
+                    if tmpl_cv is not None:
+                        tmpl_thumb = cv2.resize(tmpl_cv, (40, 40), interpolation=cv2.INTER_AREA)
+                        _, tbuf = cv2.imencode(".jpg", tmpl_thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        tb64 = base64.b64encode(tbuf).decode()
+                        data_entry["ng_thumbs_row"].controls.append(
+                            _make_thumb_widget(tb64, 40, 40, "#f44336", 2,
+                                               data_entry["ng_crops_list"], data_entry["ng_thumbs_row"],
+                                               data_entry["ng_crop_count_label"], "NG")
+                        )
+            data_entry["ng_crop_count_label"].value = f"{len(data_entry['ng_crops_list'])} NG"
+
+            # Load search_roi
+            search_roi = insp.get("search_roi", [])
+            if search_roi and len(search_roi) == 4:
+                data_entry["search_roi"] = tuple(int(v) for v in search_roi)
+                if "roi_label" in data_entry:
+                    ox, oy, ow, oh = [int(v) for v in search_roi]
+                    data_entry["roi_label"].value = f"ROI: ({ox},{oy}) {ow}×{oh}"
 
             # Show first image as main preview
             if img_paths_rel:
@@ -622,7 +1035,10 @@ def create_settings_page():
                 if os.path.isfile(first_path):
                     tmpl_cv = cv2.imread(first_path)
                     if tmpl_cv is not None:
-                        _, buf = cv2.imencode(".jpg", tmpl_cv, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        ph, pw = tmpl_cv.shape[:2]
+                        ps = min(280 / pw, 160 / ph, 1.0)
+                        prev_img = cv2.resize(tmpl_cv, (int(pw*ps), int(ph*ps)), interpolation=cv2.INTER_AREA)
+                        _, buf = cv2.imencode(".jpg", prev_img, [cv2.IMWRITE_JPEG_QUALITY, 72])
                         b64 = base64.b64encode(buf).decode()
                         data_entry["preview_img"].src = f"data:image/jpeg;base64,{b64}"
                         data_entry["preview_img"].visible = True
@@ -656,14 +1072,27 @@ def create_settings_page():
             print(f"[TEST] JSON not found: {json_path}")
             return
 
+        # Show loading indicator immediately
+        result_list.controls.clear()
+        result_list.controls.append(ft.Text("Testing...", size=13, color="#888888"))
+        page.update()
+
         def do_test():
             try:
                 print(f"[TEST] Starting FPM test with model: {selected_model}")
                 with open(json_path, "r", encoding="utf-8") as f:
                     template = json.load(f)
                 model_base = os.path.join(MODEL_DIR, selected_model)
+                # match_scale เหมือน home.py: matching บน scene เล็ก, วาด overlay บน full-res
+                img_h, img_w = cv_img.shape[:2]
+                match_scale = min(800 / max(img_w, img_h), 1.0)
+                scene_match = (cv2.resize(cv_img,
+                                          (int(img_w * match_scale), int(img_h * match_scale)),
+                                          interpolation=cv2.INTER_AREA)
+                               if match_scale < 1.0 else cv_img)
+                inv = 1.0 / match_scale if match_scale > 0 else 1.0
+
                 result_img = cv_img.copy()
-                # each entry: (insp_id, score_or_None, crop_cv_or_None, is_pass)
                 insp_results = []
 
                 for insp in template.get("inspections", []):
@@ -673,6 +1102,8 @@ def create_settings_page():
                         if single:
                             img_paths_rel = [single]
                     insp_id = insp.get("name", "?")
+
+                    # โหลด template ที่ match_scale
                     fpm_tmpls = []
                     for rel in img_paths_rel:
                         p = os.path.join(model_base, rel)
@@ -680,62 +1111,163 @@ def create_settings_page():
                             continue
                         t = cv2.imread(p)
                         if t is not None:
+                            if match_scale < 1.0:
+                                t = cv2.resize(t,
+                                               (max(1, int(t.shape[1] * match_scale)),
+                                                max(1, int(t.shape[0] * match_scale))),
+                                               interpolation=cv2.INTER_AREA)
                             fpm_tmpls.append((insp_id, t))
                     if not fpm_tmpls:
                         insp_results.append((insp_id, None, None, False))
                         print(f"[TEST]   '{insp_id}' – no templates")
                         continue
+
+                    # ROI ใน scene_match coordinates
+                    sroi = insp.get("search_roi", [])
+                    if sroi and len(sroi) == 4:
+                        sm_h, sm_w = scene_match.shape[:2]
+                        rx = max(0, min(int(sroi[0] * match_scale), sm_w - 1))
+                        ry = max(0, min(int(sroi[1] * match_scale), sm_h - 1))
+                        rw = min(int(sroi[2] * match_scale), sm_w - rx)
+                        rh = min(int(sroi[3] * match_scale), sm_h - ry)
+                        has_roi = rw > 1 and rh > 1
+                        roi_scene = scene_match[ry:ry+rh, rx:rx+rw] if has_roi else scene_match
+                    else:
+                        roi_scene = scene_match
+                        rx, ry, rw, rh = 0, 0, 0, 0
+                        has_roi = False
+
                     print(f"[TEST]   FPM '{insp_id}' ({len(fpm_tmpls)} templates) ...")
-                    hits = match_fpm(
-                        cv_img, fpm_tmpls,
-                        score_threshold=0.75,
-                        max_overlap=0.3,
-                        tolerance_angle=0,
-                    )
-                    if not hits:
+                    hits = match_fpm(roi_scene, fpm_tmpls,
+                                     score_threshold=0.50, max_overlap=0.3, tolerance_angle=0)
+
+                    # scale ขึ้น full-res สำหรับ drawing
+                    frx = int(rx * inv); fry = int(ry * inv)
+                    frw = int(rw * inv); frh = int(rh * inv)
+
+                    # Scale best OK hit to full-res
+                    ok_best_f = None
+                    ok_score = None
+                    if hits:
+                        best_ok = max(hits, key=lambda h: h["score"])
+                        if has_roi:
+                            adj = dict(best_ok)
+                            adj["rect_points"] = [(pt[0]+rx, pt[1]+ry) for pt in best_ok["rect_points"]]
+                            adj["center"] = (best_ok["center"][0]+rx, best_ok["center"][1]+ry)
+                            bx, by, bw, bh = best_ok["bbox"]
+                            adj["bbox"] = (bx+rx, by+ry, bw, bh)
+                            best_ok = adj
+                        ok_best_f = dict(best_ok)
+                        ok_best_f["rect_points"] = [(int(p[0]*inv), int(p[1]*inv)) for p in best_ok["rect_points"]]
+                        ok_best_f["center"] = (int(best_ok["center"][0]*inv), int(best_ok["center"][1]*inv))
+                        bx, by, bw_b, bh_b = best_ok["bbox"]
+                        ok_best_f["bbox"] = (int(bx*inv), int(by*inv), int(bw_b*inv), int(bh_b*inv))
+                        ok_score = best_ok["score"]
+
+                    # Match NG templates (always, regardless of OK result)
+                    ng_paths_rel = insp.get("ng_image_paths", [])
+                    ng_best_f = None
+                    ng_score = None
+                    if ng_paths_rel:
+                        ng_tmpls = []
+                        for rel in ng_paths_rel:
+                            p = os.path.join(model_base, rel)
+                            if os.path.isfile(p):
+                                t = cv2.imread(p)
+                                if t is not None:
+                                    if match_scale < 1.0:
+                                        t = cv2.resize(t,
+                                                       (max(1, int(t.shape[1]*match_scale)),
+                                                        max(1, int(t.shape[0]*match_scale))),
+                                                       interpolation=cv2.INTER_AREA)
+                                    ng_tmpls.append((insp_id, t))
+                        if ng_tmpls:
+                            ng_hits = match_fpm(roi_scene, ng_tmpls, score_threshold=0.50,
+                                                max_overlap=0.3, tolerance_angle=0)
+                            if ng_hits:
+                                best_ng = max(ng_hits, key=lambda h: h["score"])
+                                if has_roi:
+                                    ng_adj = dict(best_ng)
+                                    ng_adj["rect_points"] = [(pt[0]+rx, pt[1]+ry) for pt in best_ng["rect_points"]]
+                                    ng_adj["center"] = (best_ng["center"][0]+rx, best_ng["center"][1]+ry)
+                                    bx, by, bw, bh = best_ng["bbox"]
+                                    ng_adj["bbox"] = (bx+rx, by+ry, bw, bh)
+                                    best_ng = ng_adj
+                                ng_best_f = dict(best_ng)
+                                ng_best_f["rect_points"] = [(int(p[0]*inv), int(p[1]*inv)) for p in best_ng["rect_points"]]
+                                ng_best_f["center"] = (int(best_ng["center"][0]*inv), int(best_ng["center"][1]*inv))
+                                bx, by, bw_b, bh_b = best_ng["bbox"]
+                                ng_best_f["bbox"] = (int(bx*inv), int(by*inv), int(bw_b*inv), int(bh_b*inv))
+                                ng_score = best_ng["score"]
+
+                    # Decision: compare scores — higher wins
+                    if ok_score is None and ng_score is None:
+                        if has_roi:
+                            overlay = result_img.copy()
+                            cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
+                            cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
+                            cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
+                            _put_label(result_img, f"{insp_id} NG", frx, max(fry - 8, 18), bg=(0, 0, 160))
                         insp_results.append((insp_id, None, None, False))
                         print(f"[TEST]   '{insp_id}' – no match")
-                        continue
-                    best = max(hits, key=lambda h: h["score"])
-                    is_pass = best["score"] >= 0.75
-                    crop_cv = crop_fpm_region(cv_img, best)
-                    if is_pass:
-                        label = f"ID:{insp_id} s={best['score']:.2f}"
-                        draw_fpm_match(result_img, best, label=label)
-                    insp_results.append((insp_id, best["score"], crop_cv, is_pass))
-                    status = "OK" if is_pass else "NG"
-                    print(f"[TEST]   '{insp_id}': score={best['score']:.3f} [{status}]")
+                    elif ok_score is not None and (ng_score is None or ok_score >= ng_score):
+                        crop_cv = crop_fpm_region(cv_img, ok_best_f)
+                        if has_roi:
+                            overlay = result_img.copy()
+                            cx, cy = ok_best_f["center"]
+                            drx, dry = cx - frw // 2, cy - frh // 2
+                            cv2.rectangle(overlay, (drx, dry), (drx+frw, dry+frh), (144, 238, 144), -1)
+                            cv2.addWeighted(overlay, 0.30, result_img, 0.70, 0, result_img)
+                            cv2.rectangle(result_img, (drx, dry), (drx+frw, dry+frh), (0, 200, 0), 2)
+                            _put_label(result_img, f"s={ok_score:.2f}", drx, max(dry - 8, 18), bg=(0, 120, 0))
+                        else:
+                            draw_fpm_match(result_img, ok_best_f, label=f"s={ok_score:.2f}")
+                        insp_results.append((insp_id, ok_score, crop_cv, True))
+                        print(f"[TEST]   '{insp_id}': OK s={ok_score:.3f}" + (f" vs NG s={ng_score:.3f}" if ng_score else ""))
+                    else:
+                        crop_cv = crop_fpm_region(cv_img, ng_best_f)
+                        if has_roi:
+                            overlay = result_img.copy()
+                            cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
+                            cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
+                            cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
+                            _put_label(result_img, f"{insp_id} NG s={ng_score:.2f}", frx, max(fry - 8, 18), bg=(0, 0, 160))
+                        insp_results.append((insp_id, ng_score, crop_cv, False))
+                        print(f"[TEST]   '{insp_id}': NG s={ng_score:.3f}" + (f" vs OK s={ok_score:.3f}" if ok_score else ""))
 
-                # Display result on RAW
-                _, buf = cv2.imencode(".jpg", result_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                b64 = base64.b64encode(buf).decode()
-                large_img.src = f"data:image/jpeg;base64,{b64}"
+                # Update RAW image with result overlay
+                h, w = result_img.shape[:2]
+                scale = min(DISP_H / h, 1.0)
+                disp_w, disp_h = int(w * scale), int(h * scale)
+                result_disp = cv2.resize(result_img, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+                _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                _hide_handles()
+                large_img.src = f"data:image/jpeg;base64,{base64.b64encode(buf).decode()}"
                 large_img.visible = True
                 large_img_placeholder.visible = False
 
-                # Populate RESULT panel – every inspection point
+                # Build result cards and send progressively
                 result_list.controls.clear()
                 for insp_id, sc, crop_cv, is_pass in insp_results:
-                    if is_pass and crop_cv is not None:
-                        _, cbuf = cv2.imencode(".jpg", crop_cv, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        cb64 = base64.b64encode(cbuf).decode()
-                        img_widget = ft.Image(src=f"data:image/jpeg;base64,{cb64}",
+                    if crop_cv is not None:
+                        ch, cw = crop_cv.shape[:2]
+                        cscale = min(200 / cw, 120 / ch, 1.0)
+                        thumb = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)), interpolation=cv2.INTER_AREA)
+                        _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                        img_widget = ft.Image(src=f"data:image/jpeg;base64,{base64.b64encode(cbuf).decode()}",
                                               width=200, height=120, fit="contain")
                     else:
-                        ng_label = "NG" if sc is not None else "NG"
                         img_widget = ft.Container(
                             width=200, height=120, bgcolor="#f44336",
                             alignment=ft.Alignment(0, 0),
-                            content=ft.Text(ng_label, size=24, weight=ft.FontWeight.BOLD, color="#ffffff"),
+                            content=ft.Text("NG", size=24, weight=ft.FontWeight.BOLD, color="#ffffff"),
                         )
                     if is_pass:
-                        border_color = "#4caf50"   # green
-                        bg_color = "#e8f5e9"
+                        border_color, bg_color = "#4caf50", "#e8f5e9"
                         score_text = f"{insp_id}  s={sc:.2f}"
                         text_color = "#2e7d32"
                     else:
-                        border_color = "#f44336"   # red
-                        bg_color = "#ffebee"
+                        border_color, bg_color = "#f44336", "#ffebee"
                         score_text = f"{insp_id}  NG" if sc is None else f"{insp_id}  NG  s={sc:.2f}"
                         text_color = "#c62828"
                     result_list.controls.append(
@@ -746,13 +1278,14 @@ def create_settings_page():
                             ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                             padding=4,
                             bgcolor=bg_color,
-                            border=ft.border.all(2, border_color),
+                            border=ft.Border.all(2, border_color),
                             border_radius=4,
                         )
                     )
                 page.update()
                 n_pass = sum(1 for *_, p in insp_results if p)
                 print(f"[TEST] Done. {n_pass}/{len(insp_results)} passed.")
+
             except Exception as ex:
                 import traceback
                 traceback.print_exc()
@@ -769,20 +1302,34 @@ def create_settings_page():
                     raw_result_box,
                     ft.Row(
                         [
-                            ft.ElevatedButton("Connect camera", width=120, height=34, style=btn_style_sm("#f57c00")),
-                            ft.ElevatedButton("Trigger Image",  width=120, height=34, style=btn_style_sm("#f57c00")),
-                            ft.ElevatedButton("Open File",      width=120, height=34, style=btn_style_sm("#f57c00"),
-                                              on_click=open_file_clicked),
-                            ft.ElevatedButton("Previous",           width=120, height=34, style=btn_style_sm("#f57c00"),
-                                              on_click=previous_image_clicked),
-                            ft.ElevatedButton("Next",       width=120, height=34, style=btn_style_sm("#f57c00"),
-                                              on_click=next_image_clicked),
+                            ft.Button("Connect camera", width=120, height=34, style=btn_style_sm("#f57c00")),
+                            ft.Button("Trigger Image",  width=120, height=34, style=btn_style_sm("#f57c00")),
+                            ft.Button("Open",           width=120, height=34, style=btn_style_sm("#f57c00"),
+                                      on_click=open_images_clicked),
+                            ft.Button("Previous",       width=120, height=34, style=btn_style_sm("#f57c00"),
+                                      on_click=previous_image_clicked),
+                            ft.Button("Next",           width=120, height=34, style=btn_style_sm("#f57c00"),
+                                      on_click=next_image_clicked),
                             model_dropdown,
-                            ft.ElevatedButton("Test",           width=120, height=34, style=btn_style_sm("#f57c00"),
-                                              on_click=test_clicked),
+                            ft.Button("Test",           width=120, height=34, style=btn_style_sm("#f57c00"),
+                                      on_click=test_clicked),
+                            ft.Container(expand=True),
+                            ft.Button("ADD INSPECTION", width=160, height=34,
+                                style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#222222"},
+                                    shape=ft.RoundedRectangleBorder(radius=4), side=ft.BorderSide(1,"#888888"),
+                                    text_style=ft.TextStyle(size=11)),
+                                on_click=add_inspection),
+                            ft.Button("DELETE", width=110, height=34,
+                                style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#e53935"},
+                                    shape=ft.RoundedRectangleBorder(radius=4), side=ft.BorderSide(1,"#e53935")),
+                                on_click=delete_last),
+                            ft.Button("SAVE", width=110, height=34,
+                                style=ft.ButtonStyle(bgcolor={"":"#4caf50"}, color={"":"#ffffff"},
+                                    shape=ft.RoundedRectangleBorder(radius=4)),
+                                on_click=save_template),
                         ],
                         spacing=6,
-                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                 ],
                 spacing=4,
@@ -844,13 +1391,13 @@ def create_settings_page():
                         ],
                         spacing=4,
                     ),
-                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=8),
                 ),
                 # Sub-tab buttons + algorithm selector
                 ft.Container(
-                    content=ft.Row([btn_create, btn_camera, ft.Container(expand=True), algo_dropdown], spacing=8,
+                    content=ft.Row([btn_create, btn_camera, ft.Container(expand=True), ft.Container(content=algo_dropdown, visible=False)], spacing=8,
                                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.padding.only(left=12, right=12, bottom=8),
+                    padding=ft.Padding.only(left=12, right=12, bottom=8),
                 ),
                 # Content
                 content_area,

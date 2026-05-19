@@ -17,9 +17,10 @@ def main(page: ft.Page):
     page.bgcolor = "#ffffff"
     page.padding = 0
     page.spacing = 0
-    page.window.maximized = True
-    page.window.title_bar_hidden = True
-    page.window.frameless = True
+    if not page.web:
+        page.window.maximized = True
+        page.window.title_bar_hidden = True
+        page.window.frameless = True
     
     # Content area
     content_area = ft.Container(expand=True, bgcolor="#ffffff")
@@ -34,7 +35,7 @@ def main(page: ft.Page):
     def on_menu_change(index: int):
         """เปลี่ยนหน้าเมื่อคลิกเมนู"""
         if 0 <= index < len(pages):
-            content_area.content = pages[index]()
+            content_area.content = pages[index](page) if index == 0 else pages[index]()
             page.update()
     
     # สร้าง Sidebar

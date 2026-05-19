@@ -27,7 +27,8 @@ class Sidebar:
 
         async def on_click(e):
             if item["index"] == 3:
-                await self.page.window.destroy()
+                if not self.page.web:
+                    await self.page.window.destroy()
                 return
             self.selected_index = item["index"]
             for i, btn in enumerate(self.nav_buttons):
@@ -54,7 +55,7 @@ class Sidebar:
             clip_behavior=ft.ClipBehavior.NONE,
             alignment=ft.Alignment(0, 0),
             bgcolor=theme.SIDEBAR_ITEM_ACTIVE if is_selected else theme.SIDEBAR_COLOR,
-            border=ft.border.only(bottom=ft.BorderSide(1, "#cccccc")),
+            border=ft.Border.only(bottom=ft.BorderSide(1, "#cccccc")),
             on_click=on_click,
             animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
@@ -71,5 +72,5 @@ class Sidebar:
             ),
             width=theme.SIDEBAR_WIDTH,
             bgcolor=theme.SIDEBAR_COLOR,
-            border=ft.border.only(right=ft.BorderSide(1, "#cccccc")),
+            border=ft.Border.only(right=ft.BorderSide(1, "#cccccc")),
         )

@@ -1,0 +1,240 @@
+{
+  "model": "CV5VS_MODEL",
+  "inspections": [
+    {
+      "name": "Filter Drier",
+      "description": "Filter Drier",
+      "image_path": "img/crop_1778828873883.jpg",
+      "image_paths": [
+        "img/crop_1778828873883.jpg",
+        "img/crop_1778829146213.jpg",
+        "img/crop_1778924523003.jpg",
+        "img/crop_1778925530951.jpg"
+      ],
+      "ng_image_paths": [
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922657637.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922665707.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922673027.jpg"
+      ],
+      "crop_roi": [
+        361,
+        1070,
+        60,
+        68
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260512174925798.bmp",
+      "search_roi": [
+        203,
+        880,
+        326,
+        345
+      ]
+    },
+    {
+      "name": "Hot Gas Valve",
+      "description": "Hot Gas Valve",
+      "image_path": "img/crop_1778829046085.jpg",
+      "image_paths": [
+        "img/crop_1778829046085.jpg",
+        "img/crop_1778829160503.jpg",
+        "img/crop_1778829254197.jpg",
+        "img/crop_1778829348468.jpg",
+        "img/crop_1778830067863.jpg",
+        "img/crop_1778917061767.jpg",
+        "img/crop_1778917093422.jpg",
+        "img/crop_1778917451698.jpg",
+        "img/crop_1778918063812.jpg"
+      ],
+      "ng_image_paths": [],
+      "crop_roi": [
+        691,
+        625,
+        106,
+        178
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260512180923277.bmp",
+      "search_roi": [
+        660,
+        510,
+        221,
+        470
+      ]
+    },
+    {
+      "name": "Expansion Valve",
+      "description": "Expansion Valve",
+      "image_path": "img/crop_1778829407088.jpg",
+      "image_paths": [
+        "img/crop_1778829407088.jpg",
+        "img/crop_1778829759405.jpg",
+        "img/crop_1778830055236.jpg",
+        "img/crop_1778830211699.jpg",
+        "img/crop_1778916882333.jpg",
+        "img/crop_1778917476360.jpg",
+        "img/crop_1778917990124.jpg",
+        "img/crop_1778926262969.jpg",
+        "img/crop_1778926324343.jpg",
+        "img/crop_1778926361744.jpg",
+        "img/crop_1778926419965.jpg",
+        "img/crop_1778926963928.jpg",
+        "img/crop_1778927502065.jpg",
+        "img/crop_1778927838368.jpg"
+      ],
+      "ng_image_paths": [
+        "img/ng_ng_ng_ng_ng_ng_crop_1778926390575.jpg",
+        "img/ng_ng_ng_ng_ng_ng_crop_1778926401076.jpg",
+        "img/ng_ng_ng_ng_ng_ng_crop_1778926410586.jpg"
+      ],
+      "crop_roi": [
+        976,
+        812,
+        74,
+        80
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260512175349512.bmp",
+      "search_roi": [
+        907,
+        740,
+        282,
+        315
+      ]
+    },
+    {
+      "name": "High Pressure Sensor",
+      "description": "High Pressure Sensor",
+      "image_path": "img/crop_1778829455960.jpg",
+      "image_paths": [
+        "img/crop_1778829455960.jpg",
+        "img/crop_1778829751380.jpg",
+        "img/crop_1778830195752.jpg",
+        "img/crop_1778926447244.jpg",
+        "img/crop_1778927647960.jpg"
+      ],
+      "ng_image_paths": [],
+      "crop_roi": [
+        1010,
+        705,
+        198,
+        160
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513140750899.bmp",
+      "search_roi": [
+        967,
+        538,
+        314,
+        344
+      ]
+    },
+    {
+      "name": "Common-Start-Run",
+      "description": "Compressor Wiring: Common-Start-Run",
+      "image_path": "img/crop_1778829506344.jpg",
+      "image_paths": [
+        "img/crop_1778829506344.jpg",
+        "img/crop_1778829744633.jpg",
+        "img/crop_1778829931393.jpg",
+        "img/crop_1778830226299.jpg"
+      ],
+      "ng_image_paths": [],
+      "crop_roi": [
+        1165,
+        1177,
+        183,
+        163
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260512175311960.bmp",
+      "search_roi": [
+        1105,
+        1102,
+        336,
+        261
+      ]
+    },
+    {
+      "name": "Check Valve",
+      "description": "Check Valve",
+      "image_path": "img/crop_1778829577980.jpg",
+      "image_paths": [
+        "img/crop_1778829577980.jpg",
+        "img/crop_1778829718319.jpg",
+        "img/crop_1778829731294.jpg",
+        "img/crop_1778830239777.jpg",
+        "img/crop_1778918826436.jpg"
+      ],
+      "ng_image_paths": [],
+      "crop_roi": [
+        602,
+        1619,
+        68,
+        80
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513135141954.bmp",
+      "search_roi": [
+        476,
+        1530,
+        261,
+        293
+      ]
+    },
+    {
+      "name": "Bolt & Washer",
+      "description": "Bolt & Washer",
+      "image_path": "img/crop_1778829628971.jpg",
+      "image_paths": [
+        "img/crop_1778829628971.jpg",
+        "img/crop_1778829707574.jpg",
+        "img/crop_1778917367622.jpg",
+        "img/crop_1778927441648.jpg",
+        "img/crop_1778928002890.jpg"
+      ],
+      "ng_image_paths": [
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922708213.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922716265.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922722138.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922729181.jpg",
+        "img/ng_ng_crop_1778927930232.jpg"
+      ],
+      "crop_roi": [
+        1430,
+        1677,
+        97,
+        114
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513135716489.bmp",
+      "search_roi": [
+        1415,
+        1654,
+        183,
+        235
+      ]
+    },
+    {
+      "name": "Bolt & Washer",
+      "description": "Bolt & Washer",
+      "image_path": "img/crop_1778829666980.jpg",
+      "image_paths": [
+        "img/crop_1778829666980.jpg",
+        "img/crop_1778829702779.jpg"
+      ],
+      "ng_image_paths": [
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922562445.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922594025.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922605517.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922697837.jpg"
+      ],
+      "crop_roi": [
+        1430,
+        1677,
+        97,
+        129
+      ],
+      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513140750899.bmp",
+      "search_roi": [
+        981,
+        1714,
+        224,
+        261
+      ]
+    }
+  ]
+}

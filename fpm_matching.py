@@ -137,7 +137,8 @@ def _nms_rrect(items, max_ov):
 
 # ── main matching ────────────────────────────────────────────
 def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
-              tolerance_angle=0.0, max_targets=70, min_reduce_area=256):
+              tolerance_angle=0.0, max_targets=70, min_reduce_area=256,
+              validate_ssim=True):
     """
     Fastest Pattern Matching (NCC + image pyramid + rotation).
 
@@ -325,13 +326,14 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
                 _t_var = cv2.Laplacian(td.pyramid[0], cv2.CV_64F).var()
                 if _t_var > 50 and _p_var < _t_var * 0.15:
                     continue  # region too blurry / featureless
-                # --- SSIM check ---
-                _tp = td.pyramid[0]
-                _pp = cv2.resize(_patch, (_tp.shape[1], _tp.shape[0]),
-                                 interpolation=cv2.INTER_AREA)
-                _ssim = _compute_ssim(_pp, _tp)
-                if _ssim < 0.35:
-                    continue  # structurally dissimilar
+                # --- SSIM check (skip in fast mode) ---
+                if validate_ssim:
+                    _tp = td.pyramid[0]
+                    _pp = cv2.resize(_patch, (_tp.shape[1], _tp.shape[0]),
+                                     interpolation=cv2.INTER_AREA)
+                    _ssim = _compute_ssim(_pp, _tp)
+                    if _ssim < 0.35:
+                        continue  # structurally dissimilar
 
             # ── build corner points ──────────────────────────
             ra = -cur_ang * _D2R
@@ -387,22 +389,31 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
 
 # ── draw / crop helpers ──────────────────────────────────────
 def draw_fpm_match(scene_bgr, result, color=(0, 255, 0), thickness=2,
-                   label=""):
-    """Draw rotated bounding box for one FPM result dict."""
+                   label="", fill_alpha=0.15, label_scale=0.55):
+    """Draw rotated bounding box with semi-transparent highlight fill."""
     pts = result["rect_points"]
+    pts_arr = np.array(pts, dtype=np.int32)
+
+    # Semi-transparent bright-green fill over detected polygon
+    overlay = scene_bgr.copy()
+    cv2.fillPoly(overlay, [pts_arr], (0, 255, 80))
+    cv2.addWeighted(overlay, fill_alpha, scene_bgr, 1 - fill_alpha, 0, scene_bgr)
+
+    # Outline border
     for i in range(4):
         cv2.line(scene_bgr, pts[i], pts[(i + 1) % 4], color, thickness)
+
     cx, cy = result["center"]
     cv2.drawMarker(scene_bgr, (cx, cy), color, cv2.MARKER_CROSS, 10, 1)
     if label:
         org = (pts[0][0], pts[0][1] - 6)
         (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX,
-                                       0.55, 2)
+                                       label_scale, 2)
         cv2.rectangle(scene_bgr,
                       (org[0], org[1] - lh - 4),
                       (org[0] + lw + 6, org[1] + 4), color, -1)
         cv2.putText(scene_bgr, label, (org[0] + 3, org[1]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, label_scale, (0, 0, 0), 2)
     return scene_bgr
 
 

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import flet; help\\(flet.FilePicker\\)\" 2>&1)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import flet; import pages.settings; print\\('Import OK'\\)\")",
+      "Bash(cd /d e:\\\\99IS\\\\B1F2)",
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('pages/home.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python \"e:/99IS/B1F2/pages/home.py\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/home.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/home.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/settings.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "PowerShell(e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe -c \"import flet; print\\(flet.__version__\\)\")",
+      "PowerShell(e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/settings.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}
