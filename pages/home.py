@@ -168,12 +168,11 @@ def create_home_page(page=None):
 
     # ── RAW image display ─────────────────────────────────────────────────
     DISP_H = 570
-    raw_placeholder = ft.Text("RAW", color="#2196f3", weight=ft.FontWeight.BOLD, size=28)
     raw_image = ft.Image(src="placeholder.png", visible=False, fit="fill")
     filename_label = ft.Text("", size=11, color=theme.TEXT_SECONDARY, italic=True)
 
     raw_img_cont = ft.Container(
-        content=ft.Stack([raw_placeholder, raw_image]),
+        content=ft.Stack([raw_image]),
         height=DISP_H,
         alignment=ft.Alignment(-1, -1),
         bgcolor="#f5f5f5",
@@ -185,7 +184,6 @@ def create_home_page(page=None):
     raw_panel = ft.Container(
         content=ft.Column(
             [
-                ft.Text("RAW", size=14, weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
                 ft.Container(
                     content=raw_img_cont,
                     expand=True,
@@ -272,7 +270,6 @@ def create_home_page(page=None):
         raw_image.height = dh
         raw_img_cont.width = dw
         raw_image.visible = True
-        raw_placeholder.visible = False
         filename_label.value = img_stem
         pg.update()
 
@@ -407,9 +404,9 @@ def create_home_page(page=None):
                     cv2.rectangle(overlay, (drx, dry), (drx+frw, dry+frh), (144, 238, 144), -1)
                     cv2.addWeighted(overlay, 0.30, result_img, 0.70, 0, result_img)
                     cv2.rectangle(result_img, (drx, dry), (drx+frw, dry+frh), (0, 200, 0), 2)
-                    _put_label(result_img, f"s={ok_score:.2f}", drx, max(dry - 8, 18), bg=(0, 120, 0))
+                    _put_label(result_img, insp_id, drx, max(dry - 8, 18), bg=(0, 120, 0))
                 else:
-                    draw_fpm_match(result_img, ok_best_f, label=f"s={ok_score:.2f}")
+                    draw_fpm_match(result_img, ok_best_f, label=insp_id)
                 insp_results.append((insp_id, ok_score, crop_cv, True))
             else:
                 crop_cv = crop_fpm_region(img_cv, ng_best_f)
@@ -418,7 +415,7 @@ def create_home_page(page=None):
                     cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
                     cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
                     cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
-                    _put_label(result_img, f"{insp_id} NG s={ng_score:.2f}", frx, max(fry - 8, 18), bg=(0, 0, 160))
+                    _put_label(result_img, f"{insp_id} NG", frx, max(fry - 8, 18), bg=(0, 0, 160))
                 insp_results.append((insp_id, ng_score, crop_cv, False))
 
         # Display result image
@@ -469,11 +466,11 @@ def create_home_page(page=None):
                 )
             if is_pass:
                 border_color, bg_color = "#4caf50", "#e8f5e9"
-                score_text = f"{insp_id}  s={sc:.2f}"
+                score_text = insp_id
                 text_color = "#2e7d32"
             else:
                 border_color, bg_color = "#f44336", "#ffebee"
-                score_text = f"{insp_id}  NG" if sc is None else f"{insp_id}  NG  s={sc:.2f}"
+                score_text = f"{insp_id}  NG"
                 text_color = "#c62828"
             cards.append(
                 ft.Container(
@@ -642,7 +639,6 @@ def create_home_page(page=None):
         result_list.controls.append(ft.Text("Testing...", size=13, color="#888888"))
         ok_ng_label.value = "OK/NG"
         ok_ng_box.bgcolor = "#888888"
-        raw_placeholder.visible = True
         raw_image.visible = False
         pg.update()
 

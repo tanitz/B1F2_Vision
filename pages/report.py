@@ -30,18 +30,26 @@ def _read_csv(date_str: str | None = None) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+_thumb_cache: dict[str, str | None] = {}
+
 def _img_b64(img_id: str, w=240, h=160) -> str | None:
+    if img_id in _thumb_cache:
+        return _thumb_cache[img_id]
     path = os.path.join(IMAGES_DIR, f"{img_id}.jpg")
     if not os.path.isfile(path):
+        _thumb_cache[img_id] = None
         return None
     img = cv2.imread(path)
     if img is None:
+        _thumb_cache[img_id] = None
         return None
     ih, iw = img.shape[:2]
     scale = min(w / iw, h / ih, 1.0)
     img = cv2.resize(img, (int(iw * scale), int(ih * scale)), interpolation=cv2.INTER_AREA)
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-    return base64.b64encode(buf).decode()
+    result = base64.b64encode(buf).decode()
+    _thumb_cache[img_id] = result
+    return result
 
 
 def _badge(text, color, bg):
@@ -176,16 +184,24 @@ def create_report_page():
         options=[ft.dropdown.Option(x) for x in ("All", "PASS", "FAIL")],
         border_radius=6,
     )
-    filter_date = ft.TextField(
-        label="Date", width=150, text_size=12, hint_text="YYYY-MM-DD",
-        border_radius=6, read_only=True,
-        content_padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+    _date_text  = ft.Text("YYYY-MM-DD", size=12, color="#aaaaaa", no_wrap=True)
+    _date_label = ft.Text("Date", size=10, color="#888888")
+    filter_date = ft.Container(
+        content=ft.Column([_date_label, _date_text], spacing=0,
+                          alignment=ft.MainAxisAlignment.CENTER),
+        width=150, height=48,
+        border=ft.Border.all(1, "#aaaaaa"),
+        border_radius=6,
+        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+        bgcolor="#ffffff",
         on_click=lambda e: _open_cal(e),
+        ink=True,
     )
 
     # ── Custom web-style calendar popup ──────────────────────────────────────
     _today = datetime.date.today()
-    _cal_state = {"year": _today.year, "month": _today.month, "selected": None}
+    _cal_state  = {"year": _today.year, "month": _today.month, "selected": None, "date_str": ""}
+    _refresh_seq = {"n": 0}
 
     cal_month_label = ft.Text("", size=13, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)
     cal_grid        = ft.Column(spacing=1)
@@ -225,10 +241,14 @@ def create_report_page():
     def _on_day_click(e, day):
         d = datetime.date(_cal_state["year"], _cal_state["month"], day)
         _cal_state["selected"] = d
-        filter_date.value = d.strftime("%Y-%m-%d")
+        _cal_state["date_str"] = d.strftime("%Y-%m-%d")
+        _date_text.value = _cal_state["date_str"]
+        _date_text.color = "#333333"
         _cal_dialog.open = False
-        refresh()
         e.page.update()
+        pg = e.page
+        _refresh_seq["n"] += 1
+        pg.run_thread(lambda: (refresh(), pg.update()))
 
     def _prev_month(e):
         y, m = _cal_state["year"], _cal_state["month"]
@@ -287,10 +307,13 @@ def create_report_page():
         e.page.update()
 
     def _clear_date(e):
-        filter_date.value = ""
         _cal_state["selected"] = None
-        refresh()
-        e.page.update()
+        _cal_state["date_str"] = ""
+        _date_text.value = "YYYY-MM-DD"
+        _date_text.color = "#aaaaaa"
+        pg = e.page
+        _refresh_seq["n"] += 1
+        pg.run_thread(lambda: (refresh(), pg.update()))
 
     filter_date_row = ft.Row(
         [
@@ -302,8 +325,13 @@ def create_report_page():
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
+    PAGE_SIZE = 30
+
+    # ── Pagination state ──────────────────────────────────────────────────────
+    _view = {"seen": [], "groups": {}, "page": 0}
+
     # ── Card list ─────────────────────────────────────────────────────────────
-    card_list = ft.ListView(spacing=10, expand=True, padding=ft.Padding.only(bottom=16))
+    card_list = ft.ListView(spacing=10, expand=True, padding=ft.Padding.only(bottom=8))
 
     no_data = ft.Container(
         content=ft.Text("No data — run a test to see results here.",
@@ -311,23 +339,68 @@ def create_report_page():
         expand=True, alignment=ft.Alignment(0, 0),
     )
 
+    page_label = ft.Text("", size=12, color=theme.TEXT_SECONDARY)
+    btn_prev   = ft.IconButton(icon=ft.Icons.CHEVRON_LEFT,  icon_size=18, disabled=True)
+    btn_next   = ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, icon_size=18, disabled=True)
+
+    pagination_row = ft.Row(
+        [btn_prev, page_label, btn_next],
+        spacing=4,
+        alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+    def _show_page():
+        seen   = _view["seen"]
+        groups = _view["groups"]
+        n      = len(seen)
+        pg_n   = _view["page"]
+        total_pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
+        pg_n   = max(0, min(pg_n, total_pages - 1))
+        _view["page"] = pg_n
+
+        start = pg_n * PAGE_SIZE
+        end   = start + PAGE_SIZE
+        card_list.controls = [_build_card(groups[k]) for k in seen[start:end]]
+        card_list.visible  = (n > 0)
+        no_data.visible    = (n == 0)
+
+        page_label.value   = f"{pg_n + 1} / {total_pages}" if n > 0 else ""
+        btn_prev.disabled  = (pg_n == 0)
+        btn_next.disabled  = (pg_n >= total_pages - 1)
+        pagination_row.visible = (n > 0)
+
+    def _go_prev(e):
+        _view["page"] -= 1
+        _show_page()
+        e.page.update()
+
+    def _go_next(e):
+        _view["page"] += 1
+        _show_page()
+        e.page.update()
+
+    btn_prev.on_click = _go_prev
+    btn_next.on_click = _go_next
+
     def refresh(rows=None):
         nonlocal all_rows
-        date_str = (filter_date.value or "").strip()
+        my_seq = _refresh_seq["n"]
+
+        date_str = _cal_state.get("date_str", "").strip()
         if rows is None:
             rows = _read_csv(date_str or None)
-        all_rows = rows
 
         mdl = filter_model.value or "All"
         res = filter_result.value or "All"
 
         filtered = [
-            r for r in all_rows
+            r for r in rows
             if (mdl == "All" or r.get("model") == mdl)
             and (res == "All" or r.get("overall_result") == res)
         ]
 
-        # Group by result_image_id preserving order — latest first
+        # Group by result_image_id — latest first
         seen, groups = [], {}
         for r in reversed(filtered):
             key = r.get("result_image_id", "")
@@ -336,37 +409,40 @@ def create_report_page():
                 seen.append(key)
             groups[key].append(r)
 
-        # Stats
         n_total = len(seen)
         n_pass  = sum(1 for k in seen if groups[k][0].get("overall_result") == "PASS")
         n_fail  = n_total - n_pass
         pct     = f"{n_pass / n_total * 100:.1f}%" if n_total else "–"
+        all_models = sorted({r["model"] for r in rows})
+
+        if my_seq != _refresh_seq["n"]:
+            return
+
+        all_rows = rows
+        _view["seen"]   = seen
+        _view["groups"] = groups
+        _view["page"]   = 0
 
         stat_total.value = str(n_total)
         stat_pass.value  = str(n_pass)
         stat_fail.value  = str(n_fail)
         stat_rate.value  = pct
-
-        # Model dropdown
-        all_models = sorted({r["model"] for r in all_rows})
         filter_model.options = [ft.dropdown.Option("All")] + [
             ft.dropdown.Option(m) for m in all_models
         ]
-
-        # Build cards (max 200 tests)
-        card_list.controls = [_build_card(groups[k]) for k in seen[:200]]
-        no_data.visible    = (n_total == 0)
-        card_list.visible  = (n_total > 0)
+        _show_page()
 
     refresh()
 
     def on_filter_change(e):
-        refresh()
-        e.page.update()
+        pg = e.page
+        _refresh_seq["n"] += 1
+        pg.run_thread(lambda: (refresh(), pg.update()))
 
     def on_refresh_clicked(e):
-        refresh()
-        e.page.update()
+        pg = e.page
+        _refresh_seq["n"] += 1
+        pg.run_thread(lambda: (refresh(), pg.update()))
 
     filter_model.on_change  = on_filter_change
     filter_result.on_change = on_filter_change
@@ -416,6 +492,12 @@ def create_report_page():
                     content=ft.Stack([card_list, no_data]),
                     expand=True,
                     padding=ft.Padding.only(left=16, right=16, bottom=0),
+                ),
+
+                # Pagination
+                ft.Container(
+                    content=pagination_row,
+                    padding=ft.Padding.symmetric(horizontal=16, vertical=6),
                 ),
             ],
             spacing=0,
