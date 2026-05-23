@@ -11,15 +11,104 @@ import time
 from datetime import datetime
 import flet as ft
 import cv2
+import numpy as np
 from config import theme
 from fpm_matching import match_fpm, draw_fpm_match, crop_fpm_region
 import camera_manager as _cam_mod
+
+# Template image cache — avoid disk reads on every trigger
+_tmpl_cache: dict = {}  # (abs_path, scale_key) → np.ndarray BGR
+
+
+def _load_tmpl(path: str, scale: float):
+    key = (path, round(scale, 4))
+    if key not in _tmpl_cache:
+        t = cv2.imread(path)
+        if t is not None and scale < 1.0:
+            t = cv2.resize(t,
+                           (max(1, int(t.shape[1] * scale)),
+                            max(1, int(t.shape[0] * scale))),
+                           interpolation=cv2.INTER_AREA)
+        _tmpl_cache[key] = t
+    return _tmpl_cache.get(key)
+
+
+# Shared state broadcast to all open sessions
+_broadcast: dict = {
+    "img_src": None,             # full data URI of result image
+    "img_w": 0, "img_h": 0,
+    "overall": None,
+    "ok": 0, "ng": 0, "total": 0,
+    "cards": [],                 # list of {insp_id, sc, crop_b64, is_pass}
+}
 
 
 def _put_label(img, text, x, y, bg=(0, 0, 0), fg=(255, 255, 255), scale=0.85, thick=2):
     (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
     cv2.rectangle(img, (x - 2, y - th - 4), (x + tw + 4, y + bl + 2), bg, -1)
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, fg, thick, cv2.LINE_AA)
+
+
+def _draw_ng_banner(img, ng_items):
+    """Draw NG summary at top-right using PIL (Thai support). Only converts the banner region."""
+    if not ng_items:
+        return
+    try:
+        from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageFont as _PILFont
+    except ImportError:
+        return
+
+    font_size = 80
+    _font_candidates = [
+        r"C:\Windows\Fonts\THSarabunNew.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+        r"C:\Windows\Fonts\Tahoma.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\Arial.ttf",
+    ]
+    pil_font = None
+    for fp in _font_candidates:
+        if os.path.isfile(fp):
+            try:
+                pil_font = _PILFont.truetype(fp, font_size)
+                break
+            except Exception:
+                continue
+    if pil_font is None:
+        pil_font = _PILFont.load_default()
+
+    lines = [f"{n}: {d}" if d else n for n, d in ng_items]
+
+    _dummy_draw = _PILDraw.Draw(_PILImage.new("RGB", (1, 1)))
+    bboxes  = [_dummy_draw.textbbox((0, 0), l, font=pil_font) for l in lines]
+    widths  = [b[2] - b[0] for b in bboxes]
+    heights = [b[3] - b[1] for b in bboxes]
+
+    pad    = 20
+    line_h = max(heights) + 14
+    box_w  = max(widths)  + pad * 2
+    box_h  = len(lines) * line_h + pad
+
+    img_h, img_w = img.shape[:2]
+    x0, y0 = max(img_w - box_w - 10, 0), 10
+    x1, y1 = min(x0 + box_w, img_w - 1), min(y0 + box_h, img_h - 1)
+    bw, bh = x1 - x0, y1 - y0
+
+    # Render text on a small PIL image (banner size only — fast)
+    banner = _PILImage.new("RGB", (bw, bh), (20, 20, 20))
+    draw   = _PILDraw.Draw(banner)
+    for i, line in enumerate(lines):
+        tx = pad
+        ty = pad // 2 + i * line_h
+        draw.text((tx + 2, ty + 2), line, font=pil_font, fill=(0, 0, 0))       # shadow
+        draw.text((tx,     ty    ), line, font=pil_font, fill=(255, 255, 255))  # white
+    banner_bgr = cv2.cvtColor(np.array(banner), cv2.COLOR_RGB2BGR)
+
+    # Blend banner onto image region (no full-image copy)
+    roi = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = cv2.addWeighted(banner_bgr, 0.85, roi, 0.15, 0)
+    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 0, 200), 2)
+    cv2.line(img, (x0, y0), (x0, y1), (0, 0, 230), 6)
 
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR   = os.path.join(BASE_DIR, "model")
@@ -76,6 +165,7 @@ def create_home_page(page=None):
     is_running    = {"value": False}
     trigger_state = {"files": [], "index": -1}
     grab_state    = {"running": False}
+    last_frame    = {"img": None, "stem": None}  # most recent frame from running loop
 
     # ── OK/NG indicator ────────────────────────────────────────────────────
     ok_ng_label = ft.Text("OK/NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff")
@@ -97,7 +187,7 @@ def create_home_page(page=None):
     stat_ok_val    = ft.Text(str(count_state["ok"]),    size=35, weight=ft.FontWeight.BOLD, color="#4caf50")
     stat_ng_val    = ft.Text(str(count_state["ng"]),    size=35, weight=ft.FontWeight.BOLD, color="#f44336")
     stat_total_val = ft.Text(str(count_state["total"]), size=35, weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY)
-    clock_text     = ft.Text("", size=12, color=theme.TEXT_SECONDARY)
+    clock_text     = ft.Text(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"), size=12, color=theme.TEXT_SECONDARY)
 
     def _stat_col(label, val_widget, color):
         return ft.Column(
@@ -140,7 +230,7 @@ def create_home_page(page=None):
                 try:
                     pg.update()
                 except Exception:
-                    break
+                    pass
                 time.sleep(1)
         threading.Thread(target=_loop, daemon=True).start()
 
@@ -167,7 +257,7 @@ def create_home_page(page=None):
     )
 
     # ── RAW image display ─────────────────────────────────────────────────
-    DISP_H = 570
+    DISP_H = 684
     raw_image = ft.Image(src="placeholder.png", visible=False, fit="fill")
     filename_label = ft.Text("", size=11, color=theme.TEXT_SECONDARY, italic=True)
 
@@ -224,13 +314,14 @@ def create_home_page(page=None):
     cam_label = ft.Text("Camera Off", size=12, color=theme.TEXT_SECONDARY)
 
     # ── Start / Stop button ────────────────────────────────────────────────
+    # Use ft.Text as content so value changes are reliably detected by Flet diff
+    _start_label = ft.Text("Start", color="#ffffff", size=13, weight=ft.FontWeight.W_500)
     start_btn = ft.Button(
-        "Start",
+        content=_start_label,
         width=120,
         height=40,
         style=ft.ButtonStyle(
             bgcolor={"": "#2196f3"},
-            color={"": "#ffffff"},
             shape=ft.RoundedRectangleBorder(radius=4),
         ),
     )
@@ -249,29 +340,17 @@ def create_home_page(page=None):
 
     # ── Shared inspection function ─────────────────────────────────────────
     def _inspect(img_cv, img_stem, pg):
-        """Run FPM inspection on img_cv and update UI / save CSV."""
         t_start = time.perf_counter()
+        print(f"[Home] _inspect: START stem={img_stem} img_shape={img_cv.shape if img_cv is not None else None}")
 
         selected_model = model_dropdown.value
         if not selected_model:
+            print("[Home] _inspect: no model selected — abort")
             return
         json_path = os.path.join(MODEL_DIR, selected_model, f"{selected_model}.json")
         if not os.path.isfile(json_path):
+            print(f"[Home] _inspect: json not found: {json_path} — abort")
             return
-
-        # Show RAW image
-        h, w = img_cv.shape[:2]
-        scale = min(DISP_H / h, 1.0)
-        dw, dh = int(w * scale), int(h * scale)
-        disp = cv2.resize(img_cv, (dw, dh), interpolation=cv2.INTER_AREA)
-        _, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        raw_image.src    = f"data:image/jpeg;base64,{base64.b64encode(buf).decode()}"
-        raw_image.width  = dw
-        raw_image.height = dh
-        raw_img_cont.width = dw
-        raw_image.visible = True
-        filename_label.value = img_stem
-        pg.update()
 
         # Load template JSON
         with open(json_path, "r", encoding="utf-8") as f:
@@ -288,6 +367,7 @@ def create_home_page(page=None):
 
         result_img   = img_cv.copy()
         insp_results = []
+        ng_summary   = []  # collect (name, description) for every NG inspection
 
         for insp in template.get("inspections", []):
             img_paths_rel = insp.get("image_paths", [])
@@ -295,20 +375,16 @@ def create_home_page(page=None):
                 single = insp.get("image_path", "")
                 if single:
                     img_paths_rel = [single]
-            insp_id = insp.get("name", "?")
+            insp_id   = insp.get("name", "?")
+            insp_desc = insp.get("description", "")
 
             fpm_tmpls = []
             for rel in img_paths_rel:
                 p = os.path.join(model_base, rel)
                 if not os.path.isfile(p):
                     continue
-                t = cv2.imread(p)
+                t = _load_tmpl(p, match_scale)
                 if t is not None:
-                    if match_scale < 1.0:
-                        t = cv2.resize(t,
-                                       (max(1, int(t.shape[1] * match_scale)),
-                                        max(1, int(t.shape[0] * match_scale))),
-                                       interpolation=cv2.INTER_AREA)
                     fpm_tmpls.append((insp_id, t))
             if not fpm_tmpls:
                 insp_results.append((insp_id, None, None, False))
@@ -360,13 +436,8 @@ def create_home_page(page=None):
                 for rel in ng_paths_rel:
                     p = os.path.join(model_base, rel)
                     if os.path.isfile(p):
-                        t = cv2.imread(p)
+                        t = _load_tmpl(p, match_scale)
                         if t is not None:
-                            if match_scale < 1.0:
-                                t = cv2.resize(t,
-                                               (max(1, int(t.shape[1]*match_scale)),
-                                                max(1, int(t.shape[0]*match_scale))),
-                                               interpolation=cv2.INTER_AREA)
                             ng_tmpls.append((insp_id, t))
                 if ng_tmpls:
                     ng_hits = match_fpm(roi_scene, ng_tmpls, score_threshold=0.50,
@@ -388,6 +459,7 @@ def create_home_page(page=None):
                         ng_score = best_ng["score"]
 
             if ok_score is None and ng_score is None:
+                ng_summary.append((insp_id, insp_desc))
                 if has_roi:
                     overlay = result_img.copy()
                     cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
@@ -409,6 +481,7 @@ def create_home_page(page=None):
                     draw_fpm_match(result_img, ok_best_f, label=insp_id)
                 insp_results.append((insp_id, ok_score, crop_cv, True))
             else:
+                ng_summary.append((insp_id, insp_desc))
                 crop_cv = crop_fpm_region(img_cv, ng_best_f)
                 if has_roi:
                     overlay = result_img.copy()
@@ -418,129 +491,179 @@ def create_home_page(page=None):
                     _put_label(result_img, f"{insp_id} NG", frx, max(fry - 8, 18), bg=(0, 0, 160))
                 insp_results.append((insp_id, ng_score, crop_cv, False))
 
-        # Display result image
+        _draw_ng_banner(result_img, ng_summary)
+
+        # ── Prepare display data in thread (CPU-bound) ─────────────────────
         h, w = result_img.shape[:2]
         disp_scale = min(DISP_H / h, 1.0)
         dw, dh = int(w * disp_scale), int(h * disp_scale)
         result_disp = cv2.resize(result_img, (dw, dh), interpolation=cv2.INTER_AREA)
-        _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        raw_image.src    = f"data:image/jpeg;base64,{base64.b64encode(buf).decode()}"
-        raw_image.width  = dw
-        raw_image.height = dh
-        raw_img_cont.width = dw
-        raw_image.visible = True
+        _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        img_bytes = bytes(buf)
 
-        # Overall result
         n_pass  = sum(1 for *_, p in insp_results if p)
         overall = "PASS" if n_pass == len(insp_results) and len(insp_results) > 0 else "FAIL"
-        ok_ng_label.value = "OK" if overall == "PASS" else "NG"
-        ok_ng_box.bgcolor = theme.ACCENT_GREEN if overall == "PASS" else theme.ACCENT_RED
 
-        # Update counters
-        if overall == "PASS":
-            count_state["ok"] += 1
-        else:
-            count_state["ng"] += 1
-        count_state["total"] += 1
-        stat_ok_val.value    = str(count_state["ok"])
-        stat_ng_val.value    = str(count_state["ng"])
-        stat_total_val.value = str(count_state["total"])
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
 
-        # Result cards (2 per row)
-        cards = []
+        prepared = []
         for insp_id, sc, crop_cv, is_pass in insp_results:
             if crop_cv is not None:
                 ch, cw = crop_cv.shape[:2]
                 cscale = min(140 / cw, 90 / ch, 1.0)
                 thumb = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)), interpolation=cv2.INTER_AREA)
                 _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
-                img_widget = ft.Image(
-                    src=f"data:image/jpeg;base64,{base64.b64encode(cbuf).decode()}",
-                    width=140, height=90, fit="contain",
-                )
+                prepared.append((insp_id, bytes(cbuf), is_pass))
             else:
-                img_widget = ft.Container(
-                    width=140, height=90, bgcolor="#f44336",
-                    alignment=ft.Alignment(0, 0),
-                    content=ft.Text("NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
-                )
-            if is_pass:
-                border_color, bg_color = "#4caf50", "#e8f5e9"
-                score_text = insp_id
-                text_color = "#2e7d32"
+                prepared.append((insp_id, None, is_pass))
+
+        # ── Save to CSV + disk in background ──────────────────────────────────
+        _save_ts      = datetime.now()
+        _save_stem    = img_stem
+        _save_model   = selected_model
+        _save_results = list(insp_results)
+        _save_overall = overall
+        _save_disp    = result_disp.copy()
+
+        def _bg_save():
+            try:
+                ts            = _save_ts.strftime("%Y-%m-%d %H:%M:%S")
+                result_img_id = f"{_save_ts.strftime('%Y%m%d_%H%M%S')}_{_save_stem}"
+                results_dir     = os.path.join(BASE_DIR, "results")
+                results_img_dir = os.path.join(results_dir, "images")
+                os.makedirs(results_img_dir, exist_ok=True)
+                cv2.imwrite(os.path.join(results_img_dir, f"{result_img_id}.jpg"), _save_disp)
+                csv_path    = _today_csv_path()
+                file_exists = os.path.isfile(csv_path)
+                with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    if not file_exists:
+                        writer.writerow([
+                            "timestamp", "model", "inspection_name",
+                            "result", "score", "overall_result", "result_image_id",
+                        ])
+                    for insp_id, sc, _, is_pass in _save_results:
+                        result_str = "PASS" if is_pass else ("FAIL" if sc is not None else "NO_MATCH")
+                        score_str  = f"{sc:.4f}" if sc is not None else ""
+                        writer.writerow([
+                            ts, _save_model, insp_id,
+                            result_str, score_str, _save_overall, result_img_id,
+                        ])
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+        threading.Thread(target=_bg_save, daemon=True).start()
+
+        # ── Pre-encode broadcast cards (still in thread) ───────────────────
+        bcast_cards = []
+        for insp_id, sc, crop_cv, is_pass in insp_results:
+            crop_b64 = None
+            if crop_cv is not None:
+                ch, cw = crop_cv.shape[:2]
+                cscale = min(140 / cw, 90 / ch, 1.0)
+                thumb  = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)),
+                                    interpolation=cv2.INTER_AREA)
+                _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                crop_b64 = base64.b64encode(cbuf).decode()
+            bcast_cards.append({"insp_id": insp_id, "sc": sc, "crop_b64": crop_b64, "is_pass": is_pass})
+
+        # ── Push to UI via async task (flushes WebSocket immediately) ─────
+        _inspect_done = threading.Event()
+
+        async def _push(ib=img_bytes, dw_=dw, dh_=dh, ovr=overall,
+                        prep=prepared, bc=bcast_cards, el=elapsed_ms):
+            data_uri = f"data:image/jpeg;base64,{base64.b64encode(ib).decode()}"
+            raw_image.src    = data_uri
+            raw_image.width  = dw_
+            raw_image.height = dh_
+            raw_img_cont.width = dw_
+            raw_image.visible = True
+            filename_label.value = img_stem
+
+            ok_ng_label.value = "OK" if ovr == "PASS" else "NG"
+            ok_ng_box.bgcolor = theme.ACCENT_GREEN if ovr == "PASS" else theme.ACCENT_RED
+
+            if ovr == "PASS":
+                count_state["ok"] += 1
             else:
-                border_color, bg_color = "#f44336", "#ffebee"
-                score_text = f"{insp_id}  NG"
-                text_color = "#c62828"
-            cards.append(
-                ft.Container(
+                count_state["ng"] += 1
+            count_state["total"] += 1
+            stat_ok_val.value    = str(count_state["ok"])
+            stat_ng_val.value    = str(count_state["ng"])
+            stat_total_val.value = str(count_state["total"])
+
+            time_label.content.value = f"Process: {el:.0f} ms"
+            pg.update()
+
+            cards = []
+            for insp_id, thumb_b, is_pass in prep:
+                if thumb_b is not None:
+                    img_widget = ft.Image(
+                        src=f"data:image/jpeg;base64,{base64.b64encode(thumb_b).decode()}",
+                        width=140, height=90, fit="contain",
+                    )
+                else:
+                    img_widget = ft.Container(
+                        width=140, height=90, bgcolor="#f44336",
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Text("NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
+                    )
+                bc_ = "#4caf50" if is_pass else "#f44336"
+                bg_ = "#e8f5e9" if is_pass else "#ffebee"
+                tc_ = "#2e7d32" if is_pass else "#c62828"
+                cards.append(ft.Container(
                     content=ft.Column([
                         img_widget,
-                        ft.Text(score_text, size=9, weight=ft.FontWeight.BOLD, color=text_color),
+                        ft.Text(insp_id if is_pass else f"{insp_id}  NG",
+                                size=9, weight=ft.FontWeight.BOLD, color=tc_),
                     ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=4,
-                    bgcolor=bg_color,
-                    border=ft.Border.all(2, border_color),
-                    border_radius=4,
-                    expand=True,
-                )
-            )
-        result_list.controls.clear()
-        for i in range(0, len(cards), 2):
-            result_list.controls.append(
-                ft.Row(cards[i:i+2], spacing=4, expand=False)
-            )
+                    padding=4, bgcolor=bg_,
+                    border=ft.Border.all(2, bc_), border_radius=4, expand=True,
+                ))
+            result_list.controls.clear()
+            for i in range(0, len(cards), 2):
+                result_list.controls.append(ft.Row(cards[i:i+2], spacing=4, expand=False))
 
-        time_label.content.value = f"Process: {(time.perf_counter() - t_start) * 1000:.0f} ms"
+            # Broadcast result to all open sessions
+            _broadcast["img_src"] = data_uri
+            _broadcast["img_w"]   = dw_
+            _broadcast["img_h"]   = dh_
+            _broadcast["overall"] = ovr
+            _broadcast["ok"]      = count_state["ok"]
+            _broadcast["ng"]      = count_state["ng"]
+            _broadcast["total"]   = count_state["total"]
+            _broadcast["cards"]   = bc
 
-        # Save to CSV
-        try:
-            now           = datetime.now()
-            ts            = now.strftime("%Y-%m-%d %H:%M:%S")
-            result_img_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{img_stem}"
+            pg.pubsub.send_all_on_topic("home_update", id(pg))
+            pg.pubsub.send_all_on_topic("report_update", None)
+            pg.update()
+            _inspect_done.set()
 
-            results_dir     = os.path.join(BASE_DIR, "results")
-            results_img_dir = os.path.join(results_dir, "images")
-            os.makedirs(results_img_dir, exist_ok=True)
-
-            cv2.imwrite(os.path.join(results_img_dir, f"{result_img_id}.jpg"), result_disp)
-
-            csv_path    = _today_csv_path()
-            file_exists = os.path.isfile(csv_path)
-            with open(csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                if not file_exists:
-                    writer.writerow([
-                        "timestamp", "model", "inspection_name",
-                        "result", "score", "overall_result", "result_image_id",
-                    ])
-                for insp_id, sc, _, is_pass in insp_results:
-                    result_str = "PASS" if is_pass else ("FAIL" if sc is not None else "NO_MATCH")
-                    score_str  = f"{sc:.4f}" if sc is not None else ""
-                    writer.writerow([
-                        ts, selected_model, insp_id,
-                        result_str, score_str, overall, result_img_id,
-                    ])
-        except Exception:
-            import traceback
-            traceback.print_exc()
-
-        pg.update()
+        pg.run_task(_push)
+        _inspect_done.wait(timeout=10.0)
 
     # ── Camera grab loop ───────────────────────────────────────────────────
     def _start_camera_loop(pg):
         _hik = _cam_mod.get_camera()
 
+        def _stop_loop():
+            """Reset UI state after camera loop ends."""
+            grab_state["running"]   = False
+            is_running["value"]     = False
+            _set_start_btn(False)
+            cam_dot.bgcolor = "#888888"
+            cam_label.value = "Camera Off"
+            pg.pubsub.send_all_on_topic("cam_state", False)
+            pg.update()
+
         def _loop():
             cfg    = _cam_mod.load_config()
             cam_ip = cfg.get("camera_ip", "").strip()
             if not cam_ip:
-                cam_dot.bgcolor         = "#f44336"
-                cam_label.value         = "No camera IP configured"
-                is_running["value"]     = False
-                start_btn.text          = "Start"
-                start_btn.style.bgcolor = {"": "#2196f3"}
-                pg.update()
+                cam_dot.bgcolor = "#f44336"
+                cam_label.value = "No camera IP configured"
+                _stop_loop()
                 return
 
             cam_dot.bgcolor = "#ff9800"
@@ -549,23 +672,19 @@ def create_home_page(page=None):
 
             ok, msg = _hik.connect_by_ip(cam_ip)
             if not ok:
-                cam_dot.bgcolor         = "#f44336"
-                cam_label.value         = f"Error: {msg}"
-                is_running["value"]     = False
-                start_btn.text          = "Start"
-                start_btn.style.bgcolor = {"": "#2196f3"}
-                pg.update()
+                cam_dot.bgcolor = "#f44336"
+                cam_label.value = f"Error: {msg}"
+                _stop_loop()
                 return
 
-            ok, msg = _hik.start_streaming(trigger_on=True)
+            pg.pubsub.send_all_on_topic("cam_state", True)
+
+            ok, msg = _hik.start_streaming(preserve_trigger=True)
             if not ok:
-                cam_dot.bgcolor         = "#f44336"
-                cam_label.value         = f"Stream error: {msg}"
+                cam_dot.bgcolor = "#f44336"
+                cam_label.value = f"Stream error: {msg}"
                 _hik.disconnect()
-                is_running["value"]     = False
-                start_btn.text          = "Start"
-                start_btn.style.bgcolor = {"": "#2196f3"}
-                pg.update()
+                _stop_loop()
                 return
 
             cam_dot.bgcolor = "#4caf50"
@@ -578,63 +697,92 @@ def create_home_page(page=None):
                     continue
                 if not grab_state["running"]:
                     break
-
-                result_list.controls.clear()
-                result_list.controls.append(ft.Text("Testing...", size=13, color="#888888"))
-                ok_ng_label.value = "OK/NG"
-                ok_ng_box.bgcolor = "#888888"
-                pg.update()
-
                 stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:21]
-                _inspect(frame, stem, pg)
+                last_frame["img"]  = frame
+                last_frame["stem"] = stem
+                if model_dropdown.value:
+                    _inspect(frame, stem, pg)
 
             _hik.stop_streaming()
             _hik.disconnect()
-            cam_dot.bgcolor = "#888888"
-            cam_label.value = "Camera Off"
-            pg.update()
+            _stop_loop()
 
         threading.Thread(target=_loop, daemon=True).start()
 
     # ── Toggle Start/Stop ──────────────────────────────────────────────────
+    def _set_start_btn(running: bool):
+        print(f"[Home] _set_start_btn: running={running}")
+        _start_label.value = "Stop" if running else "Start"
+        start_btn.style = ft.ButtonStyle(
+            bgcolor={"": "#f44336" if running else "#2196f3"},
+            shape=ft.RoundedRectangleBorder(radius=4),
+        )
+        print(f"[Home] _set_start_btn: label.value='{_start_label.value}' style set")
+
     def toggle_start(e):
+        print(f"[Home] toggle_start: clicked, is_running={is_running['value']}")
         is_running["value"] = not is_running["value"]
         if is_running["value"]:
-            start_btn.text          = "Stop"
-            start_btn.style.bgcolor = {"": "#f44336"}
-            grab_state["running"]   = True
+            grab_state["running"] = True
+            _set_start_btn(True)
             _start_clock(e.page)
             _start_camera_loop(e.page)
         else:
-            grab_state["running"]   = False
-            start_btn.text          = "Start"
-            start_btn.style.bgcolor = {"": "#2196f3"}
+            grab_state["running"] = False
+            _set_start_btn(False)
+        print(f"[Home] toggle_start: calling page.update()")
         e.page.update()
+        print(f"[Home] toggle_start: done")
 
     start_btn.on_click = toggle_start
 
-    # ── Trigger button (file-based test) ───────────────────────────────────
+    def _on_cam_state_home(_, connected):
+        if connected:
+            cam_dot.bgcolor = "#4caf50"
+            if cam_label.value in ("Camera Off", "Disconnected"):
+                cam_label.value = "Connected"
+        else:
+            if not grab_state["running"]:
+                cam_dot.bgcolor = "#888888"
+                cam_label.value = "Camera Off"
+        page.update()
+
+    page.pubsub.subscribe_topic("cam_state", _on_cam_state_home)
+
+    # ── Trigger button — grab from camera if connected, else file ──────────
     def trigger_clicked(e):
-        if is_running["value"]:
+        print(f"[Home] trigger_clicked: is_running={is_running['value']}, model={model_dropdown.value}")
+        if not model_dropdown.value:
+            print("[Home] trigger_clicked: blocked — no model selected")
             return
 
         pg = e.page
-        if not trigger_state["files"]:
-            files = _get_trigger_files()
-            if not files:
-                return
-            random.shuffle(files)
-            trigger_state["files"] = files
-            trigger_state["index"] = 0
-        else:
-            trigger_state["index"] = (trigger_state["index"] + 1) % len(trigger_state["files"])
 
-        path = trigger_state["files"][trigger_state["index"]]
-        if not model_dropdown.value:
+        # ── Case 1: loop is running → use the most recent frame it captured ──
+        if is_running["value"]:
+            print(f"[Home] trigger_clicked: loop running — using last_frame, img={'yes' if last_frame['img'] is not None else 'none'}")
+            if last_frame["img"] is None:
+                result_list.controls.clear()
+                result_list.controls.append(ft.Text("รอ frame แรกจากกล้อง...", size=13, color="#888888"))
+                pg.update()
+                return
+            frame = last_frame["img"]
+            stem  = last_frame["stem"]
+            _start_clock(pg)
+            result_list.controls.clear()
+            result_list.controls.append(ft.Text("Testing...", size=13, color="#888888"))
+            ok_ng_label.value = "OK/NG"
+            ok_ng_box.bgcolor = "#888888"
+            raw_image.visible = False
+            pg.update()
+            pg.run_thread(lambda: _inspect(frame, stem, pg))
             return
 
-        _start_clock(pg)
+        # ── Case 2: loop not running ─────────────────────────────────────────
+        _hik_local = _cam_mod.get_camera()
+        print(f"[Home] trigger_clicked: camera obj={_hik_local}, connected={getattr(_hik_local,'connected',None)}")
 
+        _start_clock(pg)
         result_list.controls.clear()
         result_list.controls.append(ft.Text("Testing...", size=13, color="#888888"))
         ok_ng_label.value = "OK/NG"
@@ -642,16 +790,124 @@ def create_home_page(page=None):
         raw_image.visible = False
         pg.update()
 
-        def run_test():
-            img_cv = cv2.imread(path)
-            if img_cv is None:
-                return
-            img_stem = os.path.splitext(os.path.basename(path))[0]
-            _inspect(img_cv, img_stem, pg)
+        if _hik_local and _hik_local.connected:
+            print("[Home] trigger_clicked: path → camera grab")
+            # Grab from camera (software trigger)
+            def run_from_camera():
+                print(f"[Home] trigger: grab_one() start, connected={_hik_local.connected}")
+                frame = _hik_local.grab_one()
+                print(f"[Home] trigger: grab_one() returned {'frame' if frame is not None else 'None'}")
+                if frame is None:
+                    err = getattr(_hik_local, "last_error", "grab failed")
+                    result_list.controls.clear()
+                    result_list.controls.append(ft.Text(f"Camera error: {err}", size=13, color="#f44336"))
+                    pg.update()
+                    return
+                img_stem = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:21]
+                _inspect(frame, img_stem, pg)
+            pg.run_thread(run_from_camera)
+        else:
+            # Fallback: cycle through test images
+            print(f"[Home] trigger_clicked: path → file fallback, TRIGGER_DIR={TRIGGER_DIR}")
+            if not trigger_state["files"]:
+                files = _get_trigger_files()
+                print(f"[Home] trigger_clicked: found {len(files)} trigger files")
+                if not files:
+                    result_list.controls.clear()
+                    result_list.controls.append(
+                        ft.Text("Camera not connected and no test images found", size=13, color="#f44336")
+                    )
+                    pg.update()
+                    return
+                random.shuffle(files)
+                trigger_state["files"] = files
+                trigger_state["index"] = 0
+            else:
+                trigger_state["index"] = (trigger_state["index"] + 1) % len(trigger_state["files"])
 
-        pg.run_thread(run_test)
+            path = trigger_state["files"][trigger_state["index"]]
+            print(f"[Home] trigger_clicked: loading file {path}")
+
+            def run_from_file():
+                img_cv = cv2.imread(path)
+                print(f"[Home] run_from_file: imread={'ok' if img_cv is not None else 'FAILED'} path={path}")
+                if img_cv is None:
+                    return
+                img_stem = os.path.splitext(os.path.basename(path))[0]
+                _inspect(img_cv, img_stem, pg)
+            pg.run_thread(run_from_file)
 
     trigger_btn.on_click = trigger_clicked
+
+    # ── Apply broadcast to this session's widgets ──────────────────────────
+    def _apply_broadcast():
+        b = _broadcast
+        if not b["img_src"]:
+            return
+        raw_img_cont.content = ft.Stack([
+            ft.Image(
+                src=b["img_src"],
+                width=b["img_w"], height=b["img_h"],
+                fit="fill", visible=True,
+            )
+        ])
+        raw_img_cont.width = b["img_w"]
+
+        count_state["ok"]    = b["ok"]
+        count_state["ng"]    = b["ng"]
+        count_state["total"] = b["total"]
+        stat_ok_val.value    = str(b["ok"])
+        stat_ng_val.value    = str(b["ng"])
+        stat_total_val.value = str(b["total"])
+
+        ok_ng_label.value = "OK" if b["overall"] == "PASS" else "NG"
+        ok_ng_box.bgcolor = theme.ACCENT_GREEN if b["overall"] == "PASS" else theme.ACCENT_RED
+
+        cards = []
+        for c in b["cards"]:
+            insp_id  = c["insp_id"]
+            is_pass  = c["is_pass"]
+            crop_b64 = c["crop_b64"]
+            if crop_b64:
+                img_widget = ft.Image(
+                    src=f"data:image/jpeg;base64,{crop_b64}",
+                    width=140, height=90, fit="contain",
+                )
+            else:
+                img_widget = ft.Container(
+                    width=140, height=90, bgcolor="#f44336",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Text("NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
+                )
+            if is_pass:
+                border_color, bg_color = "#4caf50", "#e8f5e9"
+                score_text, text_color = insp_id, "#2e7d32"
+            else:
+                border_color, bg_color = "#f44336", "#ffebee"
+                score_text, text_color = f"{insp_id}  NG", "#c62828"
+            cards.append(ft.Container(
+                content=ft.Column(
+                    [img_widget, ft.Text(score_text, size=9,
+                                        weight=ft.FontWeight.BOLD, color=text_color)],
+                    spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=4, bgcolor=bg_color,
+                border=ft.Border.all(2, border_color),
+                border_radius=4, expand=True,
+            ))
+        result_list.controls.clear()
+        for i in range(0, len(cards), 2):
+            result_list.controls.append(ft.Row(cards[i:i+2], spacing=4, expand=False))
+
+    if page is not None:
+        def _on_home_update(_topic, sender_id):
+            if sender_id == id(page):
+                return
+            _apply_broadcast()
+            page.update()
+
+        page.pubsub.unsubscribe_topic("home_update")
+        page.pubsub.subscribe_topic("home_update", _on_home_update)
 
     # Register model-refresh callback so settings.py can call it after save
     def _refresh_home_models(select_model=None):

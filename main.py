@@ -3,7 +3,6 @@ O-Ring Quality Inspection Dashboard
 โครงสร้างแบบมืออาชีพ - แยกไฟล์ตามหน้าที่
 """
 import flet as ft
-from config import theme
 from components.sidebar import Sidebar
 from pages.home import create_home_page
 from pages.report import create_report_page
@@ -25,17 +24,17 @@ def main(page: ft.Page):
     # Content area
     content_area = ft.Container(expand=True, bgcolor="#ffffff")
     
-    # หน้าทั้งหมด
-    pages = [
-        create_home_page,
-        create_report_page,
-        create_settings_page,
+    # สร้างทุกหน้าครั้งเดียว — เปลี่ยน tab แค่ swap content ไม่ re-create
+    _pages = [
+        create_home_page(page),
+        create_report_page(page),
+        create_settings_page(page),
     ]
-    
+
     def on_menu_change(index: int):
         """เปลี่ยนหน้าเมื่อคลิกเมนู"""
-        if 0 <= index < len(pages):
-            content_area.content = pages[index](page) if index == 0 else pages[index]()
+        if 0 <= index < len(_pages):
+            content_area.content = _pages[index]
             page.update()
     
     # สร้าง Sidebar
@@ -58,4 +57,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main)
+    ft.run(main, assets_dir="results")

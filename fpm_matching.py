@@ -61,6 +61,24 @@ def _top_layer(img, min_side):
     return n
 
 
+# ── _TemplData cache (keyed by id of the input BGR array) ────
+# Since callers keep the array alive in their own cache, id() is stable.
+_td_cache: dict = {}   # id(bgr_array) -> (gray_ndarray, _TemplData)
+
+
+def _get_td(tmpl, min_reduce_area):
+    key = id(tmpl)
+    if key not in _td_cache:
+        g = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY) if tmpl.ndim == 3 else tmpl
+        _td_cache[key] = (g, _TemplData(g, min_reduce_area))
+    return _td_cache[key]
+
+
+def clear_template_cache():
+    """Call when template images are replaced to free cached pyramids."""
+    _td_cache.clear()
+
+
 # ── geometry helpers ─────────────────────────────────────────
 def _rot_pt(pt, center, angle):
     """Rotate *pt* around *center* by *angle* radians (image coords, Y↓)."""
@@ -151,6 +169,7 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
     tolerance_angle : float degrees (0‑180). 0 = no rotation search.
     max_targets     : int, max number of returned matches.
     min_reduce_area : int, controls image‑pyramid depth.
+    validate_ssim   : bool, False skips SSIM check for faster real-time use.
 
     Returns
     -------
@@ -162,26 +181,34 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
     scene_g = (cv2.cvtColor(scene_bgr, cv2.COLOR_BGR2GRAY)
                if scene_bgr.ndim == 3 else scene_bgr)
 
+    # ── Pre-build all _TemplData (cached) and find max pyramid depth ──
+    valid_templates = []
+    max_nL = 0
+    for lbl, tmpl in templates:
+        if tmpl is None:
+            continue
+        tmpl_g, td = _get_td(tmpl, min_reduce_area)
+        if (tmpl_g.shape[0] > scene_g.shape[0] or
+                tmpl_g.shape[1] > scene_g.shape[1] or
+                tmpl_g.size > scene_g.size):
+            continue
+        nL = len(td.pyramid) - 1
+        max_nL = max(max_nL, nL)
+        valid_templates.append((lbl, tmpl_g, td, nL))
+
+    if not valid_templates:
+        return []
+
+    # ── Build scene pyramid ONCE shared across all templates ──────────
+    src_pyr = [scene_g]
+    cur = scene_g
+    for _ in range(max_nL):
+        cur = cv2.pyrDown(cur)
+        src_pyr.append(cur)
+
     all_res = []
 
-    for lbl, tmpl in templates:
-        tmpl_g = (cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
-                  if tmpl.ndim == 3 else tmpl)
-        if (tmpl_g.shape[0] > scene_g.shape[0] or
-                tmpl_g.shape[1] > scene_g.shape[1]):
-            continue
-        if tmpl_g.size > scene_g.size:
-            continue
-
-        td = _TemplData(tmpl_g, min_reduce_area)
-        nL = len(td.pyramid) - 1          # top‑layer index
-
-        # source pyramid
-        src_pyr = [scene_g]
-        cur = scene_g
-        for _ in range(nL):
-            cur = cv2.pyrDown(cur)
-            src_pyr.append(cur)
+    for lbl, tmpl_g, td, nL in valid_templates:
 
         # angle list
         top_h, top_w = td.pyramid[nL].shape[:2]
@@ -309,10 +336,6 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
                 continue
 
             # ── texture + structural validation ──────────────
-            # NCC can give false-high scores on regions that are
-            # structurally different (normalisation artifact).
-            # 1) Laplacian variance: reject featureless patches.
-            # 2) SSIM: reject structurally dissimilar patches.
             iW = td.pyramid[0].shape[1]
             iH = td.pyramid[0].shape[0]
             _x0 = max(0, int(round(ptLT[0])))
@@ -321,19 +344,19 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
             _y1 = min(_y0 + iH, scene_g.shape[0])
             if _x1 > _x0 and _y1 > _y0:
                 _patch = scene_g[_y0:_y1, _x0:_x1]
-                # --- Laplacian variance check ---
+                # Laplacian variance: reject featureless patches
                 _p_var = cv2.Laplacian(_patch, cv2.CV_64F).var()
                 _t_var = cv2.Laplacian(td.pyramid[0], cv2.CV_64F).var()
                 if _t_var > 50 and _p_var < _t_var * 0.15:
-                    continue  # region too blurry / featureless
-                # --- SSIM check (skip in fast mode) ---
+                    continue
+                # SSIM: optional — expensive (7 GaussianBlur), skip for real-time
                 if validate_ssim:
                     _tp = td.pyramid[0]
                     _pp = cv2.resize(_patch, (_tp.shape[1], _tp.shape[0]),
                                      interpolation=cv2.INTER_AREA)
                     _ssim = _compute_ssim(_pp, _tp)
                     if _ssim < 0.35:
-                        continue  # structurally dissimilar
+                        continue
 
             # ── build corner points ──────────────────────────
             ra = -cur_ang * _D2R

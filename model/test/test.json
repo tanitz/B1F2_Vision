@@ -1,0 +1,27 @@
+{
+  "model": "test",
+  "inspections": [
+    {
+      "name": "test",
+      "description": "test",
+      "image_path": "img/crop_1779528344218.jpg",
+      "image_paths": [
+        "img/crop_1779528344218.jpg"
+      ],
+      "ng_image_paths": [],
+      "crop_roi": [
+        804,
+        165,
+        158,
+        152
+      ],
+      "source_image": "",
+      "search_roi": [
+        25,
+        38,
+        1239,
+        347
+      ]
+    }
+  ]
+}

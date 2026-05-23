@@ -53,10 +53,9 @@ def save_config(cfg: dict):
 
 # ── Pixel conversion ──────────────────────────────────────────────────────────
 
-def _to_bgr(buf, frame_info):
-    """Raw frame buffer → numpy BGR array."""
-    w, h, n = frame_info.nWidth, frame_info.nHeight, frame_info.nFrameLen
-    data = np.frombuffer(buf, dtype=np.uint8, count=n)
+def _to_bgr(data: np.ndarray, frame_info):
+    """numpy uint8 buffer → numpy BGR array."""
+    w, h = frame_info.nWidth, frame_info.nHeight
     pt   = frame_info.enPixelType
     try:
         if   pt == 0x01080001: return cv2.cvtColor(data.reshape(h, w), cv2.COLOR_GRAY2BGR)
@@ -88,6 +87,8 @@ class HikCamera:
         self._streaming   = False
         self._device_list = None
         self._cameras     = []
+        self.last_error   = ""
+        self._frame_lock  = threading.Lock()  # serialize GetImageBuffer across threads
 
     @property
     def connected(self) -> bool:
@@ -134,38 +135,70 @@ class HikCamera:
 
     def connect_by_ip(self, camera_ip: str, net_ip: str = "") -> tuple[bool, str]:
         """
-        Connect to a GigE camera directly by its IP address.
-        net_ip: IP of host NIC connected to camera (blank = auto).
+        Connect to a GigE camera by IP.
+        Strategy: scan with EnumDevices first (correct GVSP stream setup),
+        fall back to manual struct if not found in scan.
         """
         if not _sdk_ok:
             return False, f"MVS SDK unavailable: {_sdk_err}"
         self.disconnect()
+
+        # ── Try enum-based connect first (proper GVSP stream channel setup) ──
+        try:
+            dl  = MV_CC_DEVICE_INFO_LIST()
+            ret = MvCamera.MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, dl)
+            if ret == MV_OK and dl.nDeviceNum > 0:
+                for i in range(dl.nDeviceNum):
+                    di = cast(dl.pDeviceInfo[i], POINTER(MV_CC_DEVICE_INFO)).contents
+                    if di.nTLayerType == MV_GIGE_DEVICE:
+                        ip_i = di.SpecialInfo.stGigEInfo.nCurrentIp
+                        found_ip = "%d.%d.%d.%d" % (
+                            (ip_i>>24)&0xff, (ip_i>>16)&0xff,
+                            (ip_i>>8) &0xff,  ip_i     &0xff)
+                        if found_ip == camera_ip.strip():
+                            print(f"[HikCamera] connect_by_ip: found {camera_ip} via EnumDevices → connecting by index {i}")
+                            ok, msg = self._open_device_info(di)
+                            if ok:
+                                return True, f"Connected [{camera_ip}]"
+                            # fall through to manual approach
+        except Exception as ex:
+            print(f"[HikCamera] connect_by_ip: EnumDevices error: {ex}")
+
+        # ── Fallback: manual struct (requires correct net_ip for GVSP to work) ──
+        print(f"[HikCamera] connect_by_ip: not found in scan, trying manual struct")
         try:
             stDevInfo         = MV_CC_DEVICE_INFO()
             stGigEDev         = MV_GIGE_DEVICE_INFO()
             stGigEDev.nCurrentIp = _ip_to_int(camera_ip)
             if net_ip.strip() and net_ip.strip() != "0.0.0.0":
                 stGigEDev.nNetExport = _ip_to_int(net_ip.strip())
-            stDevInfo.nTLayerType           = MV_GIGE_DEVICE
+            stDevInfo.nTLayerType            = MV_GIGE_DEVICE
             stDevInfo.SpecialInfo.stGigEInfo = stGigEDev
+            di = stDevInfo
+            ok, msg = self._open_device_info(di)
+            return ok, msg
+        except Exception as ex:
+            return False, str(ex)
 
+    def _open_device_info(self, di) -> tuple[bool, str]:
+        """Internal: open device from MV_CC_DEVICE_INFO, set packet size + TriggerMode=OFF."""
+        try:
             cam = MvCamera()
-            ret = cam.MV_CC_CreateHandle(stDevInfo)
+            ret = cam.MV_CC_CreateHandle(di)
             if ret != MV_OK:
                 return False, f"CreateHandle failed (0x{ret:x})"
             ret = cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0)
             if ret != MV_OK:
                 cam.MV_CC_DestroyHandle()
                 return False, f"OpenDevice failed (0x{ret:x})"
-
             pkt = cam.MV_CC_GetOptimalPacketSize()
             if pkt > 0:
                 cam.MV_CC_SetIntValue("GevSCPSPacketSize", pkt)
-
-            cam.MV_CC_SetEnumValue("TriggerMode", MV_TRIGGER_MODE_OFF)
+            cam.MV_CC_SetEnumValue("PixelFormat", 0x02180014)  # RGB8_Packed — consistent color output
+            cam.MV_CC_SetEnumValue("TriggerMode", MV_TRIGGER_MODE_ON)
             self._cam       = cam
             self._connected = True
-            return True, f"Connected  [{camera_ip}]"
+            return True, "Connected"
         except Exception as ex:
             return False, str(ex)
 
@@ -178,27 +211,12 @@ class HikCamera:
         if not self._device_list or index >= self._device_list.nDeviceNum:
             return False, "Please scan first."
         self.disconnect()
-        try:
-            di  = cast(self._device_list.pDeviceInfo[index], POINTER(MV_CC_DEVICE_INFO)).contents
-            cam = MvCamera()
-            ret = cam.MV_CC_CreateHandle(di)
-            if ret != MV_OK:
-                return False, f"CreateHandle failed (0x{ret:x})"
-            ret = cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0)
-            if ret != MV_OK:
-                cam.MV_CC_DestroyHandle()
-                return False, f"OpenDevice failed (0x{ret:x})"
-            if di.nTLayerType == MV_GIGE_DEVICE:
-                pkt = cam.MV_CC_GetOptimalPacketSize()
-                if pkt > 0:
-                    cam.MV_CC_SetIntValue("GevSCPSPacketSize", pkt)
-            cam.MV_CC_SetEnumValue("TriggerMode", MV_TRIGGER_MODE_OFF)
-            self._cam       = cam
-            self._connected = True
+        di = cast(self._device_list.pDeviceInfo[index], POINTER(MV_CC_DEVICE_INFO)).contents
+        ok, msg = self._open_device_info(di)
+        if ok:
             name = self._cameras[index]["name"] if index < len(self._cameras) else str(index)
-            return True, f"Connected  [{name}]"
-        except Exception as ex:
-            return False, str(ex)
+            return True, f"Connected [{name}]"
+        return False, msg
 
     # ── Disconnect ────────────────────────────────────────────────────────────
 
@@ -214,6 +232,122 @@ class HikCamera:
         self._connected = False
 
     # ── Parameters ────────────────────────────────────────────────────────────
+
+    # Trigger selector / source / activation enum maps (HikRobot GenICam names → int)
+    _TRIG_SELECTOR_MAP = {
+        "FrameStart":      0,
+        "FrameBurstStart": 1,
+    }
+    _TRIG_SOURCE_MAP = {
+        "Line0":    0,
+        "Line1":    1,
+        "Line2":    2,
+        "Line3":    3,
+        "Counter0": 4,
+        "Software": 7,
+    }
+    _TRIG_ACTIVATION_MAP = {
+        "RisingEdge":  0,
+        "FallingEdge": 1,
+        "AnyEdge":     2,
+        "LevelHigh":   3,
+        "LevelLow":    4,
+    }
+    _TRIG_SELECTOR_INV    = {v: k for k, v in _TRIG_SELECTOR_MAP.items()}
+    _TRIG_SOURCE_INV      = {v: k for k, v in _TRIG_SOURCE_MAP.items()}
+    _TRIG_ACTIVATION_INV  = {v: k for k, v in _TRIG_ACTIVATION_MAP.items()}
+
+    def get_trigger_params(self) -> dict | None:
+        """Read IO trigger settings. Returns dict or None on error.
+        Nodes that are not supported by the camera model are silently skipped."""
+        if not self._connected:
+            return None
+
+        MV_E_NOTSUPPORT = 0x80000106
+
+        class _EnumVal(Structure):
+            _fields_ = [("nCurValue",    c_uint32),
+                        ("nSupportedNum",c_uint32),
+                        ("nSupportValue",c_uint32 * 64)]
+
+        def ge(name, default=0):
+            ev = _EnumVal()
+            memset(byref(ev), 0, sizeof(ev))
+            ret = self._cam.MV_CC_GetEnumValue(name, ev)
+            if ret != MV_OK:
+                print(f"[HikCamera] get_trigger_params: {name} skipped (0x{ret:x})")
+                return default
+            return ev.nCurValue
+
+        def gf(name, default=0.0):
+            v = MVCC_FLOATVALUE()
+            memset(byref(v), 0, sizeof(MVCC_FLOATVALUE))
+            ret = self._cam.MV_CC_GetFloatValue(name, v)
+            if ret != MV_OK:
+                print(f"[HikCamera] get_trigger_params: {name} skipped (0x{ret:x})")
+                return default
+            return v.fCurValue
+
+        try:
+            sel  = ge("TriggerSelector", 0)
+            mode = ge("TriggerMode",     1)
+            src  = ge("TriggerSource",   0)
+            act  = ge("TriggerActivation", 0)
+            dly  = gf("TriggerDelay",    0.0)
+            return {
+                "trigger_selector":   self._TRIG_SELECTOR_INV.get(sel,   "FrameStart"),
+                "trigger_mode":       "On" if mode == 1 else "Off",
+                "trigger_source":     self._TRIG_SOURCE_INV.get(src,     "Line0"),
+                "trigger_activation": self._TRIG_ACTIVATION_INV.get(act, "RisingEdge"),
+                "trigger_delay":      round(dly, 4),
+            }
+        except Exception as ex:
+            print(f"[HikCamera] get_trigger_params: {ex}")
+            return None
+
+    def set_trigger_params(self, trigger_selector: str = "FrameStart",
+                           trigger_mode: str = "Off",
+                           trigger_source: str = "Line0",
+                           trigger_activation: str = "RisingEdge",
+                           trigger_delay: float = 0.0) -> tuple[bool, str]:
+        """Apply IO trigger settings. Returns (ok, message).
+        Nodes not supported by the camera (MV_E_NOTSUPPORT) are silently skipped."""
+        if not self._connected:
+            return False, "Not connected"
+
+        MV_E_NOTSUPPORT = 0x80000106
+
+        def _set_enum(name, val):
+            ret = self._cam.MV_CC_SetEnumValue(name, val)
+            if ret not in (MV_OK, MV_E_NOTSUPPORT):
+                raise RuntimeError(f"{name} error (0x{ret:x})")
+            if ret == MV_E_NOTSUPPORT:
+                print(f"[HikCamera] set_trigger_params: {name} not supported, skipped")
+
+        def _set_float(name, val):
+            ret = self._cam.MV_CC_SetFloatValue(name, float(val))
+            if ret not in (MV_OK, MV_E_NOTSUPPORT):
+                raise RuntimeError(f"{name} error (0x{ret:x})")
+            if ret == MV_E_NOTSUPPORT:
+                print(f"[HikCamera] set_trigger_params: {name} not supported, skipped")
+
+        try:
+            sel_val = self._TRIG_SELECTOR_MAP.get(trigger_selector, 0)
+            src_val = self._TRIG_SOURCE_MAP.get(trigger_source, 0)
+            act_val = self._TRIG_ACTIVATION_MAP.get(trigger_activation, 0)
+            mode_on = trigger_mode == "On"
+
+            _set_enum("TriggerSelector", sel_val)
+            _set_enum("TriggerMode", 1 if mode_on else 0)
+            if mode_on:
+                _set_enum("TriggerSource",     src_val)
+                _set_enum("TriggerActivation", act_val)
+            _set_float("TriggerDelay", trigger_delay)
+            return True, "Trigger settings applied"
+        except RuntimeError as ex:
+            return False, str(ex)
+        except Exception as ex:
+            return False, str(ex)
 
     def get_params(self) -> dict | None:
         """Returns {exposure, gain, frame_rate} or None."""
@@ -260,14 +394,18 @@ class HikCamera:
 
     # ── Streaming (hardware trigger) ──────────────────────────────────────────
 
-    def start_streaming(self, trigger_on=True) -> tuple[bool, str]:
-        """Start continuous grabbing. trigger_on=True enables hardware Line0 trigger."""
+    def start_streaming(self, trigger_on=True, preserve_trigger=False) -> tuple[bool, str]:
+        """Start continuous grabbing.
+        trigger_on=True  : set TriggerMode=On + TriggerSource=Line0 (default hardware).
+        preserve_trigger : if True, skip touching TriggerMode/Source (use already-applied settings).
+        """
         if not self._connected:
             return False, "Not connected"
         try:
-            self._cam.MV_CC_SetEnumValue("TriggerMode", 1 if trigger_on else 0)
-            if trigger_on:
-                self._cam.MV_CC_SetEnumValue("TriggerSource", 0)  # Line0
+            if not preserve_trigger:
+                self._cam.MV_CC_SetEnumValue("TriggerMode", 1 if trigger_on else 0)
+                if trigger_on:
+                    self._cam.MV_CC_SetEnumValue("TriggerSource", 0)  # Line0
             ret = self._cam.MV_CC_StartGrabbing()
             if ret != MV_OK:
                 return False, f"StartGrabbing failed (0x{ret:x})"
@@ -286,52 +424,101 @@ class HikCamera:
                 pass
 
     def get_frame(self, timeout_ms: int = 2000):
-        """Get one frame from the streaming buffer. Returns numpy BGR or None on timeout/error."""
+        """Get one frame from streaming buffer. Returns numpy BGR or None.
+        Thread-safe via _frame_lock (prevents concurrent MV_E_RESOURCE from two threads)."""
         if not self._connected or not self._cam or not self._streaming:
             return None
+        if not self._frame_lock.acquire(timeout=timeout_ms / 1000.0 + 0.5):
+            return None  # another thread is already waiting
         try:
-            pv = MVCC_INTVALUE_EX()
-            memset(byref(pv), 0, sizeof(MVCC_INTVALUE_EX))
-            if self._cam.MV_CC_GetIntValueEx("PayloadSize", pv) != MV_OK:
-                return None
-            size = int(pv.nCurValue)
-            buf  = (c_ubyte * size)()
-            fi   = MV_FRAME_OUT_INFO_EX()
-            memset(byref(fi), 0, sizeof(MV_FRAME_OUT_INFO_EX))
-            ret = self._cam.MV_CC_GetOneFrameTimeout(buf, size, fi, timeout_ms)
+            stOutFrame = MV_FRAME_OUT()
+            memset(byref(stOutFrame), 0, sizeof(stOutFrame))
+            ret = self._cam.MV_CC_GetImageBuffer(stOutFrame, timeout_ms)
             if ret != MV_OK:
+                if ret != 0x80000007:  # 0x80000007 = MV_E_WAIT (trigger timeout, normal)
+                    print(f"[HikCamera] get_frame: GetImageBuffer ret=0x{ret:x}")
                 return None
+            if not stOutFrame.pBufAddr:
+                print("[HikCamera] get_frame: pBufAddr is NULL")
+                return None
+            fi  = stOutFrame.stFrameInfo
+            n   = fi.nFrameLen
+            buf = np.empty(n, dtype=np.uint8)
+            memmove(buf.ctypes.data, stOutFrame.pBufAddr, n)
+            self._cam.MV_CC_FreeImageBuffer(stOutFrame)
             return _to_bgr(buf, fi)
         except Exception as ex:
             print(f"[HikCamera] get_frame: {ex}")
             return None
+        finally:
+            self._frame_lock.release()
 
     # ── Grab one frame ────────────────────────────────────────────────────────
 
     def grab_one(self):
-        """Grab single frame → numpy BGR or None."""
+        """Grab single frame via software trigger → numpy BGR or None.
+        Pattern: TriggerMode=1, TriggerSource=7(Software), fire TriggerSoftware command.
+        Check .last_error on None return.
+        """
+        self.last_error = ""
         if not self._connected or not self._cam:
+            self.last_error = "Not connected"
+            print(f"[HikCamera] grab_one: {self.last_error}")
             return None
         try:
-            pv = MVCC_INTVALUE_EX()
-            memset(byref(pv), 0, sizeof(MVCC_INTVALUE_EX))
-            if self._cam.MV_CC_GetIntValueEx("PayloadSize", pv) != MV_OK:
-                return None
-            size = int(pv.nCurValue)
-            buf  = (c_ubyte * size)()
+            # Stop any ongoing stream so we own the grabbing state
+            if self._streaming:
+                print("[HikCamera] grab_one: stopping existing stream first")
+                self._cam.MV_CC_StopGrabbing()
+                self._streaming = False
 
-            if self._cam.MV_CC_StartGrabbing() != MV_OK:
+            # Software trigger mode (TriggerSource=7 = Software)
+            ret = self._cam.MV_CC_SetEnumValue("TriggerMode", 1)
+            print(f"[HikCamera] grab_one: TriggerMode→1  ret=0x{ret:x}")
+            ret = self._cam.MV_CC_SetEnumValue("TriggerSource", 7)
+            print(f"[HikCamera] grab_one: TriggerSource→7(Software)  ret=0x{ret:x}")
+
+            ret = self._cam.MV_CC_StartGrabbing()
+            if ret != MV_OK:
+                self.last_error = f"StartGrabbing failed (0x{ret:x})"
+                print(f"[HikCamera] grab_one: {self.last_error}")
                 return None
-            fi  = MV_FRAME_OUT_INFO_EX()
-            memset(byref(fi), 0, sizeof(MV_FRAME_OUT_INFO_EX))
-            ret = self._cam.MV_CC_GetOneFrameTimeout(buf, size, fi, 3000)
+            print("[HikCamera] grab_one: grabbing started")
+
+            # Fire software trigger
+            ret = self._cam.MV_CC_SetCommandValue("TriggerSoftware")
+            print(f"[HikCamera] grab_one: TriggerSoftware fired  ret=0x{ret:x}")
+
+            stOutFrame = MV_FRAME_OUT()
+            memset(byref(stOutFrame), 0, sizeof(stOutFrame))
+            ret = self._cam.MV_CC_GetImageBuffer(stOutFrame, 3000)
+
+            if ret != MV_OK or not stOutFrame.pBufAddr:
+                self.last_error = f"GetImageBuffer failed (0x{ret:x})"
+                print(f"[HikCamera] grab_one: {self.last_error}")
+                self._cam.MV_CC_StopGrabbing()
+                return None
+
+            fi = stOutFrame.stFrameInfo
+            n  = fi.nFrameLen
+            print(f"[HikCamera] grab_one: frame {fi.nWidth}x{fi.nHeight} "
+                  f"pixelType=0x{fi.enPixelType:x} len={n}")
+
+            # Copy out before freeing SDK buffer
+            buf = (c_ubyte * n)()
+            memmove(buf, stOutFrame.pBufAddr, n)
+            self._cam.MV_CC_FreeImageBuffer(stOutFrame)
             self._cam.MV_CC_StopGrabbing()
 
-            if ret != MV_OK:
-                return None
-            return _to_bgr(buf, fi)
+            frame = _to_bgr(buf, fi)
+            if frame is None:
+                self.last_error = f"Pixel conversion failed (pixelType=0x{fi.enPixelType:x})"
+                print(f"[HikCamera] grab_one: {self.last_error}")
+            return frame
         except Exception as ex:
-            print(f"[HikCamera] grab_one: {ex}")
+            self.last_error = str(ex)
+            print(f"[HikCamera] grab_one exception: {ex}")
+            import traceback; traceback.print_exc()
             try: self._cam.MV_CC_StopGrabbing()
             except Exception: pass
             return None

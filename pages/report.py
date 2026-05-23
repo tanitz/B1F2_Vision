@@ -145,7 +145,7 @@ def _build_card(test_rows: list[dict]) -> ft.Container:
     )
 
 
-def create_report_page():
+def create_report_page(page=None):
     all_rows = _read_csv()  # defaults to today
 
     # ── Stat cards ────────────────────────────────────────────────────────────
@@ -446,6 +446,18 @@ def create_report_page():
 
     filter_model.on_change  = on_filter_change
     filter_result.on_change = on_filter_change
+
+    if page is not None:
+        def _on_report_update(_topic, _data):
+            _refresh_seq["n"] += 1
+            refresh()
+            try:
+                page.update()
+            except Exception:
+                pass
+        page.pubsub.unsubscribe_topic("report_update")
+        page.pubsub.subscribe_topic("report_update", _on_report_update)
+
 
     # ── Full-page layout ──────────────────────────────────────────────────────
     return ft.Container(

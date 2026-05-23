@@ -20,6 +20,66 @@ def _put_label(img, text, x, y, bg=(0, 0, 0), fg=(255, 255, 255), scale=0.85, th
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, fg, thick, cv2.LINE_AA)
 
 
+def _draw_ng_banner(img, ng_items):
+    """Draw NG summary at top-right using PIL (Thai support). Only converts the banner region."""
+    if not ng_items:
+        return
+    try:
+        from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageFont as _PILFont
+    except ImportError:
+        return
+
+    font_size = 80
+    _font_candidates = [
+        r"C:\Windows\Fonts\THSarabunNew.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+        r"C:\Windows\Fonts\Tahoma.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\Arial.ttf",
+    ]
+    pil_font = None
+    for fp in _font_candidates:
+        if os.path.isfile(fp):
+            try:
+                pil_font = _PILFont.truetype(fp, font_size)
+                break
+            except Exception:
+                continue
+    if pil_font is None:
+        pil_font = _PILFont.load_default()
+
+    lines = [f"{n}: {d}" if d else n for n, d in ng_items]
+
+    _dummy_draw = _PILDraw.Draw(_PILImage.new("RGB", (1, 1)))
+    bboxes  = [_dummy_draw.textbbox((0, 0), l, font=pil_font) for l in lines]
+    widths  = [b[2] - b[0] for b in bboxes]
+    heights = [b[3] - b[1] for b in bboxes]
+
+    pad    = 20
+    line_h = max(heights) + 14
+    box_w  = max(widths)  + pad * 2
+    box_h  = len(lines) * line_h + pad
+
+    img_h, img_w = img.shape[:2]
+    x0, y0 = max(img_w - box_w - 10, 0), 10
+    x1, y1 = min(x0 + box_w, img_w - 1), min(y0 + box_h, img_h - 1)
+    bw, bh = x1 - x0, y1 - y0
+
+    banner = _PILImage.new("RGB", (bw, bh), (20, 20, 20))
+    draw   = _PILDraw.Draw(banner)
+    for i, line in enumerate(lines):
+        tx = pad
+        ty = pad // 2 + i * line_h
+        draw.text((tx + 2, ty + 2), line, font=pil_font, fill=(0, 0, 0))       # shadow
+        draw.text((tx,     ty    ), line, font=pil_font, fill=(255, 255, 255))  # white
+    banner_bgr = cv2.cvtColor(np.array(banner), cv2.COLOR_RGB2BGR)
+
+    roi = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = cv2.addWeighted(banner_bgr, 0.85, roi, 0.15, 0)
+    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 0, 200), 2)
+    cv2.line(img, (x0, y0), (x0, y1), (0, 0, 230), 6)
+
+
 def _make_thumb_widget(b64, w, h, border_color, border_r, crops_list, thumbs_row, count_label, count_suffix):
     """Thumbnail with X button to delete."""
     widget_ref = [None]
@@ -63,7 +123,7 @@ def _make_thumb_widget(b64, w, h, border_color, border_r, crops_list, thumbs_row
     return widget
 
 
-def create_settings_page():
+def create_settings_page(page=None):
 
     #  Sub-page state 
     active_tab = {"value": "create"}
@@ -103,7 +163,7 @@ def create_settings_page():
     image_state = {"path": "", "files": [], "web_files": [], "index": -1, "cv_img": None, "scale": 1.0, "act_w": 320, "act_h": 570}
     image_counter_text = ft.Text("", size=12, color=theme.TEXT_SECONDARY)
     inspection_data = []
-    crop_state = {"active": False, "target": None, "start_x": 0, "start_y": 0, "cur_x": 0, "cur_y": 0, "mode": "crop", "dragging_corner": None, "fixed_x": 0, "fixed_y": 0}
+    crop_state = {"active": False, "target": None, "start_x": 0, "start_y": 0, "cur_x": 0, "cur_y": 0, "mode": "crop", "dragging_corner": None, "fixed_x": 0, "fixed_y": 0, "press_x": 0, "press_y": 0}
 
     def make_inspection_row():
         inspection_counter["value"] += 1
@@ -348,10 +408,19 @@ def create_settings_page():
         for h in roi_handles:
             h.visible = False
 
+    def on_pan_down(e):
+        # Fires on initial pointer contact — before drag threshold — captures true click position
+        if not crop_state["active"]:
+            return
+        crop_state["press_x"] = e.local_position.x
+        crop_state["press_y"] = e.local_position.y
+
     def on_pan_start(e):
         if not crop_state["active"]:
             return
-        sx, sy = e.local_position.x, e.local_position.y
+        # Use press position (captured before drag threshold) so selection starts at actual click point
+        sx = crop_state.get("press_x", e.local_position.x)
+        sy = crop_state.get("press_y", e.local_position.y)
         if crop_state.get("mode") == "roi_adjust":
             rx = selection_rect.left or 0
             ry = selection_rect.top or 0
@@ -525,6 +594,7 @@ def create_settings_page():
     large_img_container = ft.Container(
         content=ft.GestureDetector(
             content=ft.Stack([large_img_placeholder, large_img, selection_rect, *roi_handles, crop_label]),
+            on_pan_down=on_pan_down,
             on_pan_start=on_pan_start,
             on_pan_update=on_pan_update,
             on_pan_end=on_pan_end,
@@ -1094,6 +1164,7 @@ def create_settings_page():
 
                 result_img = cv_img.copy()
                 insp_results = []
+                ng_summary   = []
 
                 for insp in template.get("inspections", []):
                     img_paths_rel = insp.get("image_paths", [])
@@ -1101,7 +1172,8 @@ def create_settings_page():
                         single = insp.get("image_path", "")
                         if single:
                             img_paths_rel = [single]
-                    insp_id = insp.get("name", "?")
+                    insp_id   = insp.get("name", "?")
+                    insp_desc = insp.get("description", "")
 
                     # โหลด template ที่ match_scale
                     fpm_tmpls = []
@@ -1202,6 +1274,7 @@ def create_settings_page():
 
                     # Decision: compare scores — higher wins
                     if ok_score is None and ng_score is None:
+                        ng_summary.append((insp_id, insp_desc))
                         if has_roi:
                             overlay = result_img.copy()
                             cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
@@ -1219,72 +1292,89 @@ def create_settings_page():
                             cv2.rectangle(overlay, (drx, dry), (drx+frw, dry+frh), (144, 238, 144), -1)
                             cv2.addWeighted(overlay, 0.30, result_img, 0.70, 0, result_img)
                             cv2.rectangle(result_img, (drx, dry), (drx+frw, dry+frh), (0, 200, 0), 2)
-                            _put_label(result_img, f"s={ok_score:.2f}", drx, max(dry - 8, 18), bg=(0, 120, 0))
+                            _put_label(result_img, insp_id, drx, max(dry - 8, 18), bg=(0, 120, 0))
                         else:
-                            draw_fpm_match(result_img, ok_best_f, label=f"s={ok_score:.2f}")
+                            draw_fpm_match(result_img, ok_best_f, label=insp_id)
                         insp_results.append((insp_id, ok_score, crop_cv, True))
                         print(f"[TEST]   '{insp_id}': OK s={ok_score:.3f}" + (f" vs NG s={ng_score:.3f}" if ng_score else ""))
                     else:
+                        ng_summary.append((insp_id, insp_desc))
                         crop_cv = crop_fpm_region(cv_img, ng_best_f)
                         if has_roi:
                             overlay = result_img.copy()
                             cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
                             cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
                             cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
-                            _put_label(result_img, f"{insp_id} NG s={ng_score:.2f}", frx, max(fry - 8, 18), bg=(0, 0, 160))
+                            _put_label(result_img, f"{insp_id} NG", frx, max(fry - 8, 18), bg=(0, 0, 160))
                         insp_results.append((insp_id, ng_score, crop_cv, False))
                         print(f"[TEST]   '{insp_id}': NG s={ng_score:.3f}" + (f" vs OK s={ok_score:.3f}" if ok_score else ""))
 
-                # Update RAW image with result overlay
+                _draw_ng_banner(result_img, ng_summary)
+
+                # ── Prepare display data in thread (CPU-bound) ────────────────
                 h, w = result_img.shape[:2]
                 scale = min(DISP_H / h, 1.0)
                 disp_w, disp_h = int(w * scale), int(h * scale)
                 result_disp = cv2.resize(result_img, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
                 _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                img_bytes = bytes(buf)
                 _hide_handles()
-                large_img.src = f"data:image/jpeg;base64,{base64.b64encode(buf).decode()}"
-                large_img.visible = True
-                large_img_placeholder.visible = False
 
-                # Build result cards and send progressively
-                result_list.controls.clear()
+                prepared = []
                 for insp_id, sc, crop_cv, is_pass in insp_results:
                     if crop_cv is not None:
                         ch, cw = crop_cv.shape[:2]
                         cscale = min(200 / cw, 120 / ch, 1.0)
                         thumb = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)), interpolation=cv2.INTER_AREA)
                         _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
-                        img_widget = ft.Image(src=f"data:image/jpeg;base64,{base64.b64encode(cbuf).decode()}",
-                                              width=200, height=120, fit="contain")
+                        prepared.append((insp_id, bytes(cbuf), is_pass))
                     else:
-                        img_widget = ft.Container(
-                            width=200, height=120, bgcolor="#f44336",
-                            alignment=ft.Alignment(0, 0),
-                            content=ft.Text("NG", size=24, weight=ft.FontWeight.BOLD, color="#ffffff"),
-                        )
-                    if is_pass:
-                        border_color, bg_color = "#4caf50", "#e8f5e9"
-                        score_text = f"{insp_id}  s={sc:.2f}"
-                        text_color = "#2e7d32"
-                    else:
-                        border_color, bg_color = "#f44336", "#ffebee"
-                        score_text = f"{insp_id}  NG" if sc is None else f"{insp_id}  NG  s={sc:.2f}"
-                        text_color = "#c62828"
-                    result_list.controls.append(
-                        ft.Container(
-                            content=ft.Column([
-                                img_widget,
-                                ft.Text(score_text, size=10, weight=ft.FontWeight.BOLD, color=text_color),
-                            ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                            padding=4,
-                            bgcolor=bg_color,
-                            border=ft.Border.all(2, border_color),
-                            border_radius=4,
-                        )
-                    )
-                page.update()
+                        prepared.append((insp_id, None, is_pass))
+
                 n_pass = sum(1 for *_, p in insp_results if p)
                 print(f"[TEST] Done. {n_pass}/{len(insp_results)} passed.")
+
+                # ── Push to UI via async task (flushes WebSocket immediately) ──
+                _test_done = threading.Event()
+
+                async def _push(ib=img_bytes, dw=disp_w, dh=disp_h, prep=prepared):
+                    large_img.src     = ib
+                    large_img.width   = dw
+                    large_img.height  = dh
+                    large_img.visible = True
+                    large_img_placeholder.visible = False
+                    page.update()
+
+                    result_list.controls.clear()
+                    for insp_id, thumb_b, is_pass in prep:
+                        if thumb_b is not None:
+                            img_w = ft.Image(src=thumb_b, width=200, height=120, fit="contain")
+                        else:
+                            img_w = ft.Container(
+                                width=200, height=120, bgcolor="#f44336",
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Text("NG", size=24,
+                                                weight=ft.FontWeight.BOLD, color="#ffffff"),
+                            )
+                        bc = "#4caf50" if is_pass else "#f44336"
+                        bg = "#e8f5e9" if is_pass else "#ffebee"
+                        tc = "#2e7d32" if is_pass else "#c62828"
+                        result_list.controls.append(
+                            ft.Container(
+                                content=ft.Column(
+                                    [img_w, ft.Text(insp_id if is_pass else f"{insp_id}  NG",
+                                                    size=10, weight=ft.FontWeight.BOLD, color=tc)],
+                                    spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                padding=4, bgcolor=bg,
+                                border=ft.Border.all(2, bc), border_radius=4,
+                            )
+                        )
+                    page.update()
+                    _test_done.set()
+
+                page.run_task(_push)
+                _test_done.wait(timeout=10.0)
 
             except Exception as ex:
                 import traceback
@@ -1293,7 +1383,193 @@ def create_settings_page():
 
         page.run_thread(do_test)
 
-    #  Create Model panel 
+    # ── Connect camera / Trigger Image (CREATE tab) ───────────────────────────
+    # Defined as variable so _on_cam_state can update it
+    btn_cam_connect_create = ft.Button(
+        "Connect camera", width=120, height=34,
+        style=btn_style_sm("#f57c00"),
+    )
+
+    def cam_connect_create(e):
+        if not _hik:
+            return
+        pg = e.page
+        if _hik.connected:
+            _hik.disconnect()
+            pg.pubsub.send_all_on_topic("cam_state", False)
+            pg.update()
+        else:
+            try:
+                cfg = _cam_mod.load_config()
+            except Exception:
+                cfg = {}
+            ip = cfg.get("camera_ip", "").strip()
+            if not ip:
+                return
+            def _do():
+                ok, _ = _hik.connect_by_ip(ip)
+                if ok:
+                    pg.pubsub.send_all_on_topic("cam_state", True)
+                pg.update()
+            pg.run_thread(_do)
+
+    btn_cam_connect_create.on_click = cam_connect_create
+
+    def cam_trigger_create(e):
+        if not _hik or not _hik.connected:
+            return
+        def _do():
+            frame = _hik.grab_one()
+            if frame is not None:
+                _, buf = cv2.imencode(".jpg", frame)
+                load_image_by_path(None, e.page, img_bytes=buf.tobytes())
+            else:
+                err = getattr(_hik, "last_error", "") or "unknown error"
+                print(f"[Settings] cam_trigger_create grab failed: {err}")
+        e.page.run_thread(_do)
+
+    # ── Start / Stop grab+inspect loop ───────────────────────────────────────
+    _grab_state = {"running": False}
+
+    btn_start_grab = ft.Button(
+        "Start", width=120, height=34,
+        style=btn_style_sm("#43a047"),
+    )
+
+    def _set_grab_btn(running: bool):
+        btn_start_grab.text  = "Stop" if running else "Start"
+        btn_start_grab.style = btn_style_sm("#e53935" if running else "#43a047")
+
+    _grab_ui_done = threading.Event()
+
+    def _grab_loop(pg, model_name):
+        print(f"[Grab] loop started, model={model_name}")
+        if _hik._streaming:
+            _hik.stop_streaming()
+            time.sleep(0.1)
+        ok, msg = _hik.start_streaming(preserve_trigger=True)
+        print(f"[Grab] start_streaming: {ok} — {msg}")
+        if not ok:
+            _grab_state["running"] = False
+            _set_grab_btn(False)
+            pg.run_task(_async_noop)
+            return
+
+        while _grab_state["running"]:
+            t0 = time.monotonic()
+            frame = _hik.get_frame(timeout_ms=3000)
+            t1 = time.monotonic()
+            if frame is None:
+                continue
+            if not _grab_state["running"]:
+                break
+
+            result_img, is_pass, insp_results = _do_inspect(frame, model_name)
+            t2 = time.monotonic()
+
+            # ── Prepare display data in thread (CPU-bound) ────────────────────
+            h, w   = result_img.shape[:2]
+            scale  = min(DISP_H / h, 1.0)
+            dw, dh = int(w * scale), int(h * scale)
+            disp   = cv2.resize(result_img, (dw, dh), interpolation=cv2.INTER_AREA)
+            _, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            img_bytes = bytes(buf)
+
+            # Pre-encode thumbnails in thread so async task is lightweight
+            prepared = []
+            for insp_id, sc, crop_cv, ok in insp_results:
+                if crop_cv is not None:
+                    ch, cw  = crop_cv.shape[:2]
+                    cs      = min(200 / cw, 120 / ch, 1.0)
+                    thumb   = cv2.resize(crop_cv, (int(cw*cs), int(ch*cs)),
+                                         interpolation=cv2.INTER_AREA)
+                    _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                    prepared.append((insp_id, bytes(cbuf), ok))
+                else:
+                    prepared.append((insp_id, None, ok))
+
+            # ── Push to UI via async task (flushes WebSocket immediately) ─────
+            _grab_ui_done.clear()
+
+            async def _push(ib=img_bytes, dw_=dw, dh_=dh, fr=frame,
+                            prep=prepared, _t0=t0, _t1=t1, _t2=t2, sc=scale):
+                t3 = time.monotonic()
+                large_img.src     = ib
+                large_img.width   = dw_
+                large_img.height  = dh_
+                large_img.visible = True
+                large_img_placeholder.visible = False
+                image_state["cv_img"] = fr
+                image_state["scale"]  = sc
+                image_state["act_w"]  = dw_
+                image_state["act_h"]  = dh_
+                large_img_container.width = dw_
+                pg.update()
+                t4 = time.monotonic()
+
+                result_list.controls.clear()
+                for insp_id, thumb_b, ok_ in prep:
+                    if thumb_b is not None:
+                        img_w = ft.Image(src=thumb_b, width=200, height=120, fit="contain")
+                    else:
+                        img_w = ft.Container(
+                            width=200, height=120, bgcolor="#f44336",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Text("NG", size=24,
+                                            weight=ft.FontWeight.BOLD, color="#ffffff"),
+                        )
+                    bc = "#4caf50" if ok_ else "#f44336"
+                    bg = "#e8f5e9" if ok_ else "#ffebee"
+                    tc = "#2e7d32" if ok_ else "#c62828"
+                    result_list.controls.append(
+                        ft.Container(
+                            content=ft.Column(
+                                [img_w, ft.Text(insp_id if ok_ else f"{insp_id}  NG",
+                                                size=10, weight=ft.FontWeight.BOLD, color=tc)],
+                                spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            padding=4, bgcolor=bg,
+                            border=ft.Border.all(2, bc), border_radius=4,
+                        )
+                    )
+                pg.update()
+                t5 = time.monotonic()
+
+                print(
+                    f"[Grab] get_frame={1000*(_t1-_t0):.0f}ms  "
+                    f"inspect={1000*(_t2-_t1):.0f}ms  "
+                    f"img_update={1000*(t4-t3):.0f}ms  "
+                    f"cards_update={1000*(t5-t4):.0f}ms  "
+                    f"total={1000*(t5-_t0):.0f}ms"
+                )
+                _grab_ui_done.set()
+
+            pg.run_task(_push)
+            _grab_ui_done.wait(timeout=5.0)   # wait for async flush before next frame
+
+        _hik.stop_streaming()
+        print("[Grab] loop stopped")
+
+    def toggle_grab(e):
+        pg = e.page
+        if _grab_state["running"]:
+            _grab_state["running"] = False
+            _set_grab_btn(False)
+            pg.update()
+        else:
+            if not _hik or not _hik.connected:
+                return
+            model = model_dropdown.value
+            if not model:
+                return
+            _grab_state["running"] = True
+            _set_grab_btn(True)
+            pg.update()
+            pg.run_thread(lambda: _grab_loop(pg, model))
+
+    btn_start_grab.on_click = toggle_grab
+
+    #  Create Model panel
     create_model_view = ft.Row(
         [
             # RAW+RESULT+MODEL box + buttons below
@@ -1302,17 +1578,19 @@ def create_settings_page():
                     raw_result_box,
                     ft.Row(
                         [
-                            ft.Button("Connect camera", width=120, height=34, style=btn_style_sm("#f57c00")),
-                            ft.Button("Trigger Image",  width=120, height=34, style=btn_style_sm("#f57c00")),
+                            model_dropdown,
+                            btn_cam_connect_create,
                             ft.Button("Open",           width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=open_images_clicked),
                             ft.Button("Previous",       width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=previous_image_clicked),
                             ft.Button("Next",           width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=next_image_clicked),
-                            model_dropdown,
+                            ft.Button("Trigger Image",  width=120, height=34, style=btn_style_sm("#f57c00"),
+                                      on_click=cam_trigger_create),
                             ft.Button("Test",           width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=test_clicked),
+                            btn_start_grab,
                             ft.Container(expand=True),
                             ft.Button("ADD INSPECTION", width=160, height=34,
                                 style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#222222"},
@@ -1486,6 +1764,8 @@ def create_settings_page():
             if ok:
                 try: _cam_mod.save_config({"camera_ip": ip, "net_ip": ""})
                 except Exception: pass
+                _apply_params(page)
+                page.pubsub.send_all_on_topic("cam_state", True)
             _set_status(msg, "#4caf50" if ok else "#f44336", page)
         page.run_thread(_conn)
 
@@ -1498,6 +1778,9 @@ def create_settings_page():
         _set_status("Connecting...", "#ff9800", page)
         def _conn():
             ok, msg = _hik.connect_by_index(idx) if _hik else (False, "SDK not available")
+            if ok:
+                _apply_params(page)
+                page.pubsub.send_all_on_topic("cam_state", True)
             _set_status(msg, "#4caf50" if ok else "#f44336", page)
         page.run_thread(_conn)
 
@@ -1506,6 +1789,7 @@ def create_settings_page():
             _hik.disconnect()
         cam_info_text.value = ""
         _set_status("Disconnected", "#888888", e.page)
+        e.page.pubsub.send_all_on_topic("cam_state", False)
 
     # ── Parameters ────────────────────────────────────────────────────────────
     exp_field  = _tf("Exposure (µs)", "10000", 160)
@@ -1518,18 +1802,21 @@ def create_settings_page():
         content_padding=ft.Padding.only(left=10, right=0, top=4, bottom=4),
     )
 
-    def do_get_params(e):
-        if not _hik or not _hik.connected:
-            _set_status("Not connected", "#f44336", e.page)
-            return
-        p = _hik.get_params()
+    def _apply_params(page):
+        """Read params from camera and update UI fields."""
+        p = _hik.get_params() if _hik else None
         if p:
             exp_field.value  = f"{p['exposure']:.0f}"
             gain_field.value = f"{p['gain']:.2f}"
             fps_field.value  = f"{p['frame_rate']:.1f}"
-            _set_status("Parameters read", "#4caf50", e.page)
-        else:
-            _set_status("Failed to read parameters", "#f44336", e.page)
+            page.update()
+
+    def do_get_params(e):
+        if not _hik or not _hik.connected:
+            _set_status("Not connected", "#f44336", e.page)
+            return
+        _apply_params(e.page)
+        _set_status("Parameters read", "#4caf50", e.page)
 
     def do_set_params(e):
         page = e.page
@@ -1550,35 +1837,272 @@ def create_settings_page():
             _set_status(msg, "#4caf50" if ok else "#f44336", page)
         page.run_thread(_apply)
 
-    # ── Preview ───────────────────────────────────────────────────────────────
-    _PREV_H = 460
-    prev_placeholder = ft.Text("No image — click Grab Frame", size=14, color="#aaaaaa", italic=True)
-    prev_img         = ft.Image(src="placeholder.png", visible=False, fit="contain")
+    # ── Live preview ──────────────────────────────────────────────────────────
+    prev_placeholder = ft.Text("กำลังรอสัญญาณกล้อง...", size=14, color="#aaaaaa", italic=True)
+    prev_img         = ft.Image(src=b"", visible=False, fit="contain", expand=True,
+                                gapless_playback=True)
+    prev_info_text   = ft.Text("", size=11, color="#888888")
 
-    def do_grab(e):
-        page = e.page
-        if not _hik or not _hik.connected:
-            _set_status("Not connected", "#f44336", page)
-            return
-        _set_status("Grabbing frame...", "#ff9800", page)
-        def _grab():
-            frame = _hik.grab_one()
-            if frame is not None:
-                import base64 as _b64
-                h, w = frame.shape[:2]
-                scale = min(_PREV_H / h, 1.0)
-                dw, dh = int(w * scale), int(h * scale)
-                disp = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_AREA)
-                _, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                prev_img.src     = f"data:image/jpeg;base64,{_b64.b64encode(buf).decode()}"
-                prev_img.width   = dw
-                prev_img.height  = dh
-                prev_img.visible = True
-                prev_placeholder.visible = False
-                _set_status(f"Frame: {w}×{h}", "#4caf50", page)
-            else:
-                _set_status("Grab failed — check connection", "#f44336", page)
-        page.run_thread(_grab)
+    _live = {"running": False, "pg": None, "lock": threading.Lock()}
+
+    def _start_live(pg):
+        with _live["lock"]:
+            if _live["running"]:
+                return
+            if not _hik or not _hik.connected:
+                return
+            _live["running"] = True
+        _live["pg"]      = pg
+        prev_placeholder.value   = "กำลังโหลดภาพ..."
+        prev_placeholder.visible = True
+        prev_img.visible         = False
+        prev_info_text.value     = ""
+
+        def _loop():
+            import base64 as _b64
+            print(f"[Live] _loop started, connected={_hik.connected}, streaming={_hik._streaming}")
+
+            # Stop any existing stream, then start in continuous mode (TriggerMode=Off)
+            was_streaming = _hik._streaming
+            if was_streaming:
+                print("[Live] stopping existing stream first")
+                _hik.stop_streaming()
+                time.sleep(0.15)
+
+            ok, msg = _hik.start_streaming(preserve_trigger=True)
+            print(f"[Live] start_streaming: {ok} — {msg}, _streaming={_hik._streaming}")
+            if not ok:
+                _live["running"] = False
+                return
+
+            PREVIEW_W    = 1024         # width cap for live preview
+            TARGET_FPS   = 15
+            _interval    = 1.0 / TARGET_FPS
+            _pending     = {"v": False}
+            _t_last      = [0.0]
+            _first_shown = [False]
+
+            async def _push(data: bytes, info: str, first: bool):
+                prev_img.src         = data
+                prev_info_text.value = info
+                if first:
+                    prev_img.visible         = True
+                    prev_placeholder.visible = False
+                    pg.update()
+                else:
+                    prev_img.update()
+                    prev_info_text.update()
+                await asyncio.sleep(0)
+                _pending["v"] = False
+
+            while _live["running"]:
+                now     = time.monotonic()
+                elapsed = now - _t_last[0]
+                if elapsed < _interval:
+                    time.sleep(_interval - elapsed)
+                    continue
+
+                frame = _hik.get_frame(timeout_ms=2000)
+                if frame is None:
+                    continue
+                if _pending["v"]:
+                    continue
+
+                _t_last[0] = time.monotonic()
+                orig_h, orig_w = frame.shape[:2]
+                h, w = orig_h, orig_w
+                if w > PREVIEW_W:
+                    scale = PREVIEW_W / w
+                    frame = cv2.resize(frame, (PREVIEW_W, int(h * scale)),
+                                       interpolation=cv2.INTER_AREA)
+                _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                data  = bytes(buf)
+                info  = f"{orig_w}×{orig_h}"
+                first = not _first_shown[0]
+                if first:
+                    _first_shown[0] = True
+                _pending["v"] = True
+                pg.run_task(_push, data, info, first)
+
+            _hik.stop_streaming()
+            prev_info_text.value = ""
+
+        threading.Thread(target=_loop, daemon=True).start()
+
+    def _stop_live():
+        # Just signal the loop to stop — it exits within frame_timeout ms (500ms)
+        # and handles stream cleanup itself
+        _live["running"] = False
+
+    # ── Inspection (Start button) ─────────────────────────────────────────────
+    _inspect_state = {"running": False, "model": None}
+
+    async def _async_noop():
+        pass
+
+    _tmpl_cache_s: dict = {}   # (path, scale) -> cv2 image
+    _json_cache_s: dict = {}   # model_name -> (mtime, template_dict)
+
+    def _load_tmpl_s(path: str, scale: float):
+        key = (path, round(scale, 4))
+        if key not in _tmpl_cache_s:
+            t = cv2.imread(path)
+            if t is not None and scale < 1.0:
+                t = cv2.resize(t,
+                               (max(1, int(t.shape[1] * scale)),
+                                max(1, int(t.shape[0] * scale))),
+                               interpolation=cv2.INTER_AREA)
+            _tmpl_cache_s[key] = t
+        return _tmpl_cache_s.get(key)
+
+    def _do_inspect(frame, model_name):
+        """Run FPM inspection. Returns (result_img, is_pass, insp_results) or (frame, None, [])."""
+        try:
+            json_path = os.path.join(MODEL_DIR, model_name, f"{model_name}.json")
+            if not os.path.isfile(json_path):
+                return frame, None, []
+
+            # Cache JSON — only re-read when file changes on disk
+            mtime = os.path.getmtime(json_path)
+            if _json_cache_s.get(model_name, (None,))[0] != mtime:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    _json_cache_s[model_name] = (mtime, json.load(f))
+            template = _json_cache_s[model_name][1]
+
+            model_base   = os.path.join(MODEL_DIR, model_name)
+            img_h, img_w = frame.shape[:2]
+            match_scale  = min(640 / max(img_w, img_h), 1.0)  # 640 is faster than 800
+            scene_match  = (cv2.resize(frame,
+                                       (int(img_w * match_scale), int(img_h * match_scale)),
+                                       interpolation=cv2.INTER_AREA)
+                            if match_scale < 1.0 else frame)
+            inv          = 1.0 / match_scale if match_scale > 0 else 1.0
+            result_img   = frame.copy()
+            ng_summary   = []
+            insp_results = []
+
+            for insp in template.get("inspections", []):
+                img_paths_rel = insp.get("image_paths", [])
+                if not img_paths_rel:
+                    single = insp.get("image_path", "")
+                    if single:
+                        img_paths_rel = [single]
+                insp_id   = insp.get("name", "?")
+                insp_desc = insp.get("description", "")
+
+                fpm_tmpls = []
+                for rel in img_paths_rel:
+                    t = _load_tmpl_s(os.path.join(model_base, rel), match_scale)
+                    if t is not None:
+                        fpm_tmpls.append((insp_id, t))
+                if not fpm_tmpls:
+                    ng_summary.append((insp_id, insp_desc))
+                    insp_results.append((insp_id, None, None, False))
+                    continue
+
+                sroi = insp.get("search_roi", [])
+                if sroi and len(sroi) == 4:
+                    sm_h, sm_w = scene_match.shape[:2]
+                    rx = max(0, min(int(sroi[0] * match_scale), sm_w - 1))
+                    ry = max(0, min(int(sroi[1] * match_scale), sm_h - 1))
+                    rw = min(int(sroi[2] * match_scale), sm_w - rx)
+                    rh = min(int(sroi[3] * match_scale), sm_h - ry)
+                    has_roi   = rw > 1 and rh > 1
+                    roi_scene = scene_match[ry:ry+rh, rx:rx+rw] if has_roi else scene_match
+                else:
+                    roi_scene      = scene_match
+                    rx, ry, rw, rh = 0, 0, 0, 0
+                    has_roi        = False
+
+                hits = match_fpm(roi_scene, fpm_tmpls, score_threshold=0.50,
+                                 max_overlap=0.3, tolerance_angle=0)
+                frx = int(rx * inv); fry = int(ry * inv)
+                frw = int(rw * inv); frh = int(rh * inv)
+
+                ok_best_f, ok_score = None, None
+                if hits:
+                    best_ok = max(hits, key=lambda h: h["score"])
+                    if has_roi:
+                        adj = dict(best_ok)
+                        adj["rect_points"] = [(pt[0]+rx, pt[1]+ry) for pt in best_ok["rect_points"]]
+                        adj["center"]      = (best_ok["center"][0]+rx, best_ok["center"][1]+ry)
+                        bx, by, bw_b, bh_b = best_ok["bbox"]
+                        adj["bbox"]        = (bx+rx, by+ry, bw_b, bh_b)
+                        best_ok            = adj
+                    ok_best_f = dict(best_ok)
+                    ok_best_f["rect_points"] = [(int(p[0]*inv), int(p[1]*inv)) for p in best_ok["rect_points"]]
+                    ok_best_f["center"]      = (int(best_ok["center"][0]*inv), int(best_ok["center"][1]*inv))
+                    bx, by, bw_b, bh_b       = best_ok["bbox"]
+                    ok_best_f["bbox"]         = (int(bx*inv), int(by*inv), int(bw_b*inv), int(bh_b*inv))
+                    ok_score                  = best_ok["score"]
+
+                # Batch all NG templates into a single match_fpm call (faster than one call per template)
+                ng_best_f, ng_score = None, None
+                ng_paths_rel = insp.get("ng_image_paths", [])
+                if ng_paths_rel:
+                    ng_tmpls = []
+                    for rel in ng_paths_rel:
+                        t = _load_tmpl_s(os.path.join(model_base, rel), match_scale)
+                        if t is not None:
+                            ng_tmpls.append((insp_id, t))
+                    if ng_tmpls:
+                        ng_hits = match_fpm(roi_scene, ng_tmpls, score_threshold=0.50,
+                                            max_overlap=0.3, tolerance_angle=0)
+                        if ng_hits:
+                            best_ng = max(ng_hits, key=lambda h: h["score"])
+                            if has_roi:
+                                ng_adj = dict(best_ng)
+                                ng_adj["rect_points"] = [(pt[0]+rx, pt[1]+ry) for pt in best_ng["rect_points"]]
+                                ng_adj["center"]      = (best_ng["center"][0]+rx, best_ng["center"][1]+ry)
+                                bx, by, bw_b, bh_b   = best_ng["bbox"]
+                                ng_adj["bbox"]        = (bx+rx, by+ry, bw_b, bh_b)
+                                best_ng               = ng_adj
+                            ng_best_f = dict(best_ng)
+                            ng_best_f["rect_points"] = [(int(p[0]*inv), int(p[1]*inv)) for p in best_ng["rect_points"]]
+                            ng_best_f["center"]      = (int(best_ng["center"][0]*inv), int(best_ng["center"][1]*inv))
+                            bx, by, bw_b, bh_b       = best_ng["bbox"]
+                            ng_best_f["bbox"]         = (int(bx*inv), int(by*inv), int(bw_b*inv), int(bh_b*inv))
+                            ng_score                  = best_ng["score"]
+
+                if ok_score is None and ng_score is None:
+                    ng_summary.append((insp_id, insp_desc))
+                    if has_roi:
+                        overlay = result_img.copy()
+                        cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
+                        cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
+                        cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
+                        _put_label(result_img, f"{insp_id} NG", frx, max(fry-8, 18), bg=(0, 0, 160))
+                    insp_results.append((insp_id, None, None, False))
+                elif ok_score is not None and (ng_score is None or ok_score >= ng_score):
+                    crop_cv = crop_fpm_region(frame, ok_best_f)
+                    if has_roi:
+                        overlay = result_img.copy()
+                        cx, cy   = ok_best_f["center"]
+                        drx, dry = cx - frw//2, cy - frh//2
+                        cv2.rectangle(overlay, (drx, dry), (drx+frw, dry+frh), (144, 238, 144), -1)
+                        cv2.addWeighted(overlay, 0.30, result_img, 0.70, 0, result_img)
+                        cv2.rectangle(result_img, (drx, dry), (drx+frw, dry+frh), (0, 200, 0), 2)
+                        _put_label(result_img, insp_id, drx, max(dry-8, 18), bg=(0, 120, 0))
+                    else:
+                        draw_fpm_match(result_img, ok_best_f, label=insp_id)
+                    insp_results.append((insp_id, ok_score, crop_cv, True))
+                else:
+                    ng_summary.append((insp_id, insp_desc))
+                    crop_cv = crop_fpm_region(frame, ng_best_f) if ng_best_f is not None else None
+                    if has_roi:
+                        overlay = result_img.copy()
+                        cv2.rectangle(overlay, (frx, fry), (frx+frw, fry+frh), (100, 100, 220), -1)
+                        cv2.addWeighted(overlay, 0.25, result_img, 0.75, 0, result_img)
+                        cv2.rectangle(result_img, (frx, fry), (frx+frw, fry+frh), (0, 0, 220), 2)
+                        _put_label(result_img, f"{insp_id} NG", frx, max(fry-8, 18), bg=(0, 0, 160))
+                    insp_results.append((insp_id, ng_score, crop_cv, False))
+
+            _draw_ng_banner(result_img, ng_summary)
+            return result_img, (len(ng_summary) == 0), insp_results
+        except Exception as ex:
+            print(f"[Inspect] error: {ex}")
+            import traceback; traceback.print_exc()
+            return frame, None, []
 
     _build_cam_list()
 
@@ -1664,6 +2188,7 @@ def create_settings_page():
                                 shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
                                                     offset=ft.Offset(0, 2)),
                             ),
+
                         ],
                         spacing=12,
                         scroll=ft.ScrollMode.AUTO,
@@ -1672,15 +2197,15 @@ def create_settings_page():
                     padding=ft.Padding.all(12),
                 ),
 
-                # ── Right: preview ────────────────────────────────────────────
+                # ── Right: live preview ───────────────────────────────────────
                 ft.Container(
                     content=ft.Column(
                         [
                             ft.Row([
-                                ft.Text("PREVIEW", size=12, weight=ft.FontWeight.BOLD,
+                                ft.Text("LIVE PREVIEW", size=12, weight=ft.FontWeight.BOLD,
                                         color=theme.TEXT_PRIMARY),
                                 ft.Container(expand=True),
-                                _cbtn("Grab Frame", "#f57c00", do_grab),
+                                prev_info_text,
                             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             ft.Container(
                                 content=ft.Stack([
@@ -1690,8 +2215,12 @@ def create_settings_page():
                                         alignment=ft.Alignment(0, 0),
                                         bgcolor="#f5f5f5",
                                     ),
-                                    prev_img,
-                                ]),
+                                    ft.Container(
+                                        content=prev_img,
+                                        expand=True,
+                                        alignment=ft.Alignment(0, 0),
+                                    ),
+                                ], expand=True),
                                 expand=True,
                                 border=ft.Border.all(1, "#cccccc"),
                                 border_radius=8,
@@ -1715,11 +2244,47 @@ def create_settings_page():
         bgcolor=theme.BG_COLOR,
     )
 
+    # ── Sync camera connection state across all pages ─────────────────────────
+    def _apply_cam_state_settings(connected: bool, pg=None):
+        """Update both tabs' camera widgets based on connection state."""
+        if connected:
+            cam_status_dot.bgcolor  = "#4caf50"
+            cam_status_text.value   = "Connected"
+            btn_cam_connect_create.text  = "Disconnect"
+            btn_cam_connect_create.style = btn_style_sm("#f44336")
+            if active_tab["value"] == "camera" and pg:
+                _start_live(pg)
+        else:
+            cam_status_dot.bgcolor  = "#888888"
+            cam_status_text.value   = "Disconnected"
+            btn_cam_connect_create.text  = "Connect camera"
+            btn_cam_connect_create.style = btn_style_sm("#f57c00")
+            _grab_state["running"] = False
+            _set_grab_btn(False)
+            _stop_live()
+            prev_img.visible         = False
+            prev_placeholder.value   = "กำลังรอสัญญาณกล้อง..."
+            prev_placeholder.visible = True
+            prev_info_text.value     = ""
+
+    def _on_cam_state_settings(_topic, connected):
+        _apply_cam_state_settings(connected, page)
+        page.update()
+
+    page.pubsub.subscribe_topic("cam_state", _on_cam_state_settings)
+
     def show_tab(tab):
+        prev_tab = active_tab["value"]
         active_tab["value"] = tab
         btn_create.style = tab_style(tab == "create")
         btn_camera.style = tab_style(tab == "camera")
         content_area.content = create_model_view if tab == "create" else camera_setting_view
+        # Start live preview when entering camera tab (if connected)
+        if tab == "camera" and _hik and _hik.connected:
+            _start_live(page)
+        # Stop live preview when leaving camera tab
+        elif prev_tab == "camera" and tab != "camera":
+            _stop_live()
         content_area.update()
         btn_create.update()
         btn_camera.update()
