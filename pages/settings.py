@@ -11,7 +11,23 @@ import os
 import threading
 import time
 from config import theme
-from fpm_matching import match_fpm, draw_fpm_match, crop_fpm_region
+from fpm_matching import match_fpm, draw_fpm_match, crop_fpm_region, clear_template_cache
+
+# Template cache — same pattern as home.py to keep arrays alive so id() is stable
+_tmpl_cache_test: dict = {}  # (abs_path, scale_key) → np.ndarray BGR
+
+
+def _load_tmpl_test(path: str, scale: float):
+    key = (path, round(scale, 4))
+    if key not in _tmpl_cache_test:
+        t = cv2.imread(path)
+        if t is not None and scale < 1.0:
+            t = cv2.resize(t,
+                           (max(1, int(t.shape[1] * scale)),
+                            max(1, int(t.shape[0] * scale))),
+                           interpolation=cv2.INTER_AREA)
+        _tmpl_cache_test[key] = t
+    return _tmpl_cache_test.get(key)
 
 
 def _put_label(img, text, x, y, bg=(0, 0, 0), fg=(255, 255, 255), scale=0.85, thick=2):
@@ -153,6 +169,7 @@ def create_settings_page(page=None):
 
     btn_create = ft.Button("CREATE MODEL", height=34, style=tab_style(True))
     btn_camera = ft.Button("CAMERA SETTING", height=34, style=tab_style(False))
+    btn_modbus = ft.Button("MODBUS RTU", height=34, style=tab_style(False))
 
     #  Content panels 
     content_area = ft.Container(expand=True, padding=ft.Padding.only(left=12, right=12, bottom=12))
@@ -160,7 +177,8 @@ def create_settings_page(page=None):
     #  Inspection rows 
     inspection_list = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
     inspection_counter = {"value": 0}
-    image_state = {"path": "", "files": [], "web_files": [], "index": -1, "cv_img": None, "scale": 1.0, "act_w": 320, "act_h": 570}
+    _disp = {"h": max(585, int((page.height or 900) * 0.72 *1.6 )) if page else 741}
+    image_state = {"path": "", "files": [], "web_files": [], "index": -1, "cv_img": None, "scale": 1.0, "act_w": 320, "act_h": _disp["h"]}
     image_counter_text = ft.Text("", size=12, color=theme.TEXT_SECONDARY)
     inspection_data = []
     crop_state = {"active": False, "target": None, "start_x": 0, "start_y": 0, "cur_x": 0, "cur_y": 0, "mode": "crop", "dragging_corner": None, "fixed_x": 0, "fixed_y": 0, "press_x": 0, "press_y": 0}
@@ -365,7 +383,6 @@ def create_settings_page(page=None):
 
     #  Display size constants (portrait 9:16)
     DISP_W = 320
-    DISP_H = 570
 
     #  Large IMG display 
     large_img = ft.Image(src="placeholder.png", visible=False, fit="fill")
@@ -599,7 +616,7 @@ def create_settings_page(page=None):
             on_pan_update=on_pan_update,
             on_pan_end=on_pan_end,
         ),
-        height=DISP_H,
+        expand=True,
         alignment=ft.Alignment(-1, -1),
         bgcolor="#ffffff",
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -617,8 +634,7 @@ def create_settings_page(page=None):
             expand=True,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        width=280,
-        height=DISP_H + 30,
+        width=320,
         padding=4,
         border=ft.Border.only(right=ft.BorderSide(1, "#aaaaaa")),
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -628,8 +644,7 @@ def create_settings_page(page=None):
     model_panel_col = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
     model_panel = ft.Container(
         content=model_panel_col,
-        width=385,
-        height=DISP_H + 30,
+        width=360,
         padding=4,
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
     )
@@ -662,8 +677,10 @@ def create_settings_page(page=None):
                 model_panel,
             ],
             spacing=0,
-            vertical_alignment=ft.CrossAxisAlignment.START,
+            expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         ),
+        expand=True,
         border=ft.Border.all(1, "#aaaaaa"),
         border_radius=4,
         padding=4,
@@ -690,9 +707,10 @@ def create_settings_page(page=None):
             if img_cv is not None:
                 print("[DEBUG] load_image_by_path: Image loaded successfully, processing...")
                 image_state["cv_img"] = img_cv
+                _cam_frame["value"]   = img_cv.copy()
                 h, w = img_cv.shape[:2]
                 print(f"[DEBUG] load_image_by_path: Original size={w}x{h}")
-                scale = min(DISP_H / h, 1.0)
+                scale = min(_disp["h"] / h, 1.0)
                 image_state["scale"] = scale
                 disp_w = int(w * scale)
                 disp_h = int(h * scale)
@@ -994,7 +1012,7 @@ def create_settings_page(page=None):
     model_dropdown = ft.Dropdown(
         label="Select Model",
         width=200,
-        height=40,
+        height=34,
         text_size=12,
         options=[ft.dropdown.Option(m) for m in get_model_list()],
         on_select=lambda e: show_model_info(e),
@@ -1175,19 +1193,14 @@ def create_settings_page(page=None):
                     insp_id   = insp.get("name", "?")
                     insp_desc = insp.get("description", "")
 
-                    # โหลด template ที่ match_scale
+                    # โหลด template ที่ match_scale (cache เหมือน home.py)
                     fpm_tmpls = []
                     for rel in img_paths_rel:
                         p = os.path.join(model_base, rel)
                         if not os.path.isfile(p):
                             continue
-                        t = cv2.imread(p)
+                        t = _load_tmpl_test(p, match_scale)
                         if t is not None:
-                            if match_scale < 1.0:
-                                t = cv2.resize(t,
-                                               (max(1, int(t.shape[1] * match_scale)),
-                                                max(1, int(t.shape[0] * match_scale))),
-                                               interpolation=cv2.INTER_AREA)
                             fpm_tmpls.append((insp_id, t))
                     if not fpm_tmpls:
                         insp_results.append((insp_id, None, None, False))
@@ -1245,13 +1258,8 @@ def create_settings_page(page=None):
                         for rel in ng_paths_rel:
                             p = os.path.join(model_base, rel)
                             if os.path.isfile(p):
-                                t = cv2.imread(p)
+                                t = _load_tmpl_test(p, match_scale)
                                 if t is not None:
-                                    if match_scale < 1.0:
-                                        t = cv2.resize(t,
-                                                       (max(1, int(t.shape[1]*match_scale)),
-                                                        max(1, int(t.shape[0]*match_scale))),
-                                                       interpolation=cv2.INTER_AREA)
                                     ng_tmpls.append((insp_id, t))
                         if ng_tmpls:
                             ng_hits = match_fpm(roi_scene, ng_tmpls, score_threshold=0.50,
@@ -1313,7 +1321,7 @@ def create_settings_page(page=None):
 
                 # ── Prepare display data in thread (CPU-bound) ────────────────
                 h, w = result_img.shape[:2]
-                scale = min(DISP_H / h, 1.0)
+                scale = min(_disp["h"] / h, 1.0)
                 disp_w, disp_h = int(w * scale), int(h * scale)
                 result_disp = cv2.resize(result_img, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
                 _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -1386,8 +1394,14 @@ def create_settings_page(page=None):
     # ── Connect camera / Trigger Image (CREATE tab) ───────────────────────────
     # Defined as variable so _on_cam_state can update it
     btn_cam_connect_create = ft.Button(
-        "Connect camera", width=120, height=34,
-        style=btn_style_sm("#f57c00"),
+        "Connect camera", width=140, height=34,
+        style=ft.ButtonStyle(
+            bgcolor={"": "#f57c00"},
+            color={"": "#ffffff"},
+            shape=ft.RoundedRectangleBorder(radius=4),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+            text_style=ft.TextStyle(size=11),
+        ),
     )
 
     def cam_connect_create(e):
@@ -1464,12 +1478,13 @@ def create_settings_page(page=None):
             if not _grab_state["running"]:
                 break
 
+            _cam_frame["value"] = frame.copy()
             result_img, is_pass, insp_results = _do_inspect(frame, model_name)
             t2 = time.monotonic()
 
             # ── Prepare display data in thread (CPU-bound) ────────────────────
             h, w   = result_img.shape[:2]
-            scale  = min(DISP_H / h, 1.0)
+            scale  = min(_disp["h"] / h, 1.0)
             dw, dh = int(w * scale), int(h * scale)
             disp   = cv2.resize(result_img, (dw, dh), interpolation=cv2.INTER_AREA)
             _, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -1569,6 +1584,55 @@ def create_settings_page(page=None):
 
     btn_start_grab.on_click = toggle_grab
 
+    # ── Y2 toggle (shared between Create Model and Camera Setting tabs) ──────────
+    _y2_state_lbl = ft.Text("OFF", size=12, color="#aaaaaa")
+
+    def _y2_toggled(e):
+        val = e.control.value
+        _y2_state_lbl.value  = "ON"  if val else "OFF"
+        _y2_state_lbl.color  = "#43a047" if val else "#aaaaaa"
+        e.page.update()
+        if not _mb.get("connected"):
+            return
+        slave = int(mb_slave_field.value or "1")
+        def _do():
+            try:
+                _mb["client"].write_coil(address=1, value=val, device_id=slave)
+            except Exception as ex:
+                print(f"[MB] Y2 write_coil error: {ex}")
+        e.page.run_thread(_do)
+
+    _y2_switch = ft.Switch(
+        value=False,
+        active_color="#43a047",
+        inactive_thumb_color="#e0e0e0",
+        on_change=_y2_toggled,
+    )
+
+    _y2_state_lbl_create = ft.Text("OFF", size=12, color="#aaaaaa")
+
+    def _y2_toggled_create(e):
+        val = e.control.value
+        _y2_state_lbl_create.value  = "ON"  if val else "OFF"
+        _y2_state_lbl_create.color  = "#43a047" if val else "#aaaaaa"
+        e.page.update()
+        if not _mb.get("connected"):
+            return
+        slave = int(mb_slave_field.value or "1")
+        def _do():
+            try:
+                _mb["client"].write_coil(address=1, value=val, device_id=slave)
+            except Exception as ex:
+                print(f"[MB] Y2 write_coil error: {ex}")
+        e.page.run_thread(_do)
+
+    _y2_switch_create = ft.Switch(
+        value=False,
+        active_color="#43a047",
+        inactive_thumb_color="#e0e0e0",
+        on_change=_y2_toggled_create,
+    )
+
     #  Create Model panel
     create_model_view = ft.Row(
         [
@@ -1580,7 +1644,7 @@ def create_settings_page(page=None):
                         [
                             model_dropdown,
                             btn_cam_connect_create,
-                            ft.Button("Open",           width=120, height=34, style=btn_style_sm("#f57c00"),
+                            ft.Button("Open File",      width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=open_images_clicked),
                             ft.Button("Previous",       width=120, height=34, style=btn_style_sm("#f57c00"),
                                       on_click=previous_image_clicked),
@@ -1592,6 +1656,11 @@ def create_settings_page(page=None):
                                       on_click=test_clicked),
                             btn_start_grab,
                             ft.Container(expand=True),
+                            ft.Text("Y2", size=12, weight=ft.FontWeight.BOLD,
+                                    color=theme.TEXT_PRIMARY),
+                            _y2_switch_create,
+                            _y2_state_lbl_create,
+                            ft.Container(width=8),
                             ft.Button("ADD INSPECTION", width=160, height=34,
                                 style=ft.ButtonStyle(bgcolor={"":"#ffffff"}, color={"":"#222222"},
                                     shape=ft.RoundedRectangleBorder(radius=4), side=ft.BorderSide(1,"#888888"),
@@ -1792,9 +1861,10 @@ def create_settings_page(page=None):
         e.page.pubsub.send_all_on_topic("cam_state", False)
 
     # ── Parameters ────────────────────────────────────────────────────────────
-    exp_field  = _tf("Exposure (µs)", "10000", 160)
-    gain_field = _tf("Gain (dB)",     "1.00",  160)
-    fps_field  = _tf("Frame Rate",    "25.0",  160)
+    exp_field       = _tf("Exposure (µs)",      "10000",   160)
+    gain_field      = _tf("Gain (dB)",          "1.00",    160)
+    fps_field       = _tf("Frame Rate",         "25.0",    160)
+    trig_delay_field = _tf("Trigger Delay (µs)", "2000000", 160)
     trig_dd    = ft.Dropdown(
         label="Trigger Mode", width=160, text_size=12, value="OFF",
         options=[ft.dropdown.Option("OFF"), ft.dropdown.Option("ON")],
@@ -1809,7 +1879,11 @@ def create_settings_page(page=None):
             exp_field.value  = f"{p['exposure']:.0f}"
             gain_field.value = f"{p['gain']:.2f}"
             fps_field.value  = f"{p['frame_rate']:.1f}"
-            page.update()
+        tp = _hik.get_trigger_params() if _hik else None
+        if tp:
+            trig_dd.value            = "ON" if tp["trigger_mode"] == "On" else "OFF"
+            trig_delay_field.value   = f"{tp['trigger_delay']:.0f}"
+        page.update()
 
     def do_get_params(e):
         if not _hik or not _hik.connected:
@@ -1824,16 +1898,23 @@ def create_settings_page(page=None):
             _set_status("Not connected", "#f44336", page)
             return
         try:
-            exp  = float(exp_field.value  or "10000")
-            gain = float(gain_field.value or "1.0")
-            fps  = float(fps_field.value  or "25.0")
-            trig = trig_dd.value == "ON"
+            exp   = float(exp_field.value        or "10000")
+            gain  = float(gain_field.value       or "1.0")
+            fps   = float(fps_field.value        or "25.0")
+            trig  = trig_dd.value == "ON"
+            delay = float(trig_delay_field.value or "0")
         except ValueError:
             _set_status("Invalid parameter value", "#f44336", page)
             return
         _set_status("Applying...", "#ff9800", page)
         def _apply():
             ok, msg = _hik.set_params(exposure=exp, gain=gain, frame_rate=fps, trigger_on=trig)
+            if ok:
+                ok2, msg2 = _hik.set_trigger_params(
+                    trigger_mode="On" if trig else "Off",
+                    trigger_delay=delay,
+                )
+                msg = msg2 if not ok2 else f"{msg} | Delay={delay:.0f}µs"
             _set_status(msg, "#4caf50" if ok else "#f44336", page)
         page.run_thread(_apply)
 
@@ -1843,7 +1924,8 @@ def create_settings_page(page=None):
                                 gapless_playback=True)
     prev_info_text   = ft.Text("", size=11, color="#888888")
 
-    _live = {"running": False, "pg": None, "lock": threading.Lock()}
+    _live = {"running": False, "pg": None, "lock": threading.Lock(), "last_frame": None}
+    _cam_frame = {"value": None}  # shared: frame ล่าสุดจากทุก source
 
     def _start_live(pg):
         with _live["lock"]:
@@ -1908,6 +1990,8 @@ def create_settings_page(page=None):
                 if _pending["v"]:
                     continue
 
+                _live["last_frame"] = frame.copy()
+                _cam_frame["value"] = frame.copy()
                 _t_last[0] = time.monotonic()
                 orig_h, orig_w = frame.shape[:2]
                 h, w = orig_h, orig_w
@@ -1930,9 +2014,12 @@ def create_settings_page(page=None):
         threading.Thread(target=_loop, daemon=True).start()
 
     def _stop_live():
-        # Just signal the loop to stop — it exits within frame_timeout ms (500ms)
-        # and handles stream cleanup itself
         _live["running"] = False
+
+    def _stop_cam_preview():
+        """Stop both live preview and grab loops so another consumer can own the camera."""
+        _live["running"]        = False
+        _grab_state["running"]  = False
 
     # ── Inspection (Start button) ─────────────────────────────────────────────
     _inspect_state = {"running": False, "model": None}
@@ -1971,7 +2058,7 @@ def create_settings_page(page=None):
 
             model_base   = os.path.join(MODEL_DIR, model_name)
             img_h, img_w = frame.shape[:2]
-            match_scale  = min(640 / max(img_w, img_h), 1.0)  # 640 is faster than 800
+            match_scale  = min(800 / max(img_w, img_h), 1.0)
             scene_match  = (cv2.resize(frame,
                                        (int(img_w * match_scale), int(img_h * match_scale)),
                                        interpolation=cv2.INTER_AREA)
@@ -2106,6 +2193,55 @@ def create_settings_page(page=None):
 
     _build_cam_list()
 
+    _save_status_lbl = ft.Text("", size=11, color="#888888")
+
+    def _do_save_image(e):
+        pg    = e.page
+        frame = _cam_frame.get("value")
+        if frame is None:
+            _save_status_lbl.value = "ไม่มีภาพ — รอ trigger ก่อน"
+            pg.update()
+            return
+        import datetime
+        now      = datetime.datetime.now()
+        date_str = now.strftime("%Y%m%d")
+        fname    = now.strftime("%Y%m%d_%H%M%S") + ".jpg"
+        save_dir = os.path.join(BASE_DIR, "image", date_str)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, fname)
+        cv2.imwrite(save_path, frame)
+        _save_status_lbl.value = f"Saved: image/{date_str}/{fname}"
+        pg.update()
+
+    _cam_action_bar = ft.Container(
+        content=ft.Row(
+            [
+                ft.Text("Y2", size=12, weight=ft.FontWeight.BOLD,
+                        color=theme.TEXT_PRIMARY),
+                _y2_switch,
+                _y2_state_lbl,
+                ft.Container(width=16),
+                ft.Button(
+                    "บันทึกภาพ", height=34,
+                    style=ft.ButtonStyle(
+                        bgcolor={"": "#1565c0"}, color={"": "#ffffff"},
+                        shape=ft.RoundedRectangleBorder(radius=6),
+                        padding=ft.Padding.symmetric(horizontal=14, vertical=4),
+                        text_style=ft.TextStyle(size=12),
+                    ),
+                    on_click=_do_save_image,
+                ),
+                _save_status_lbl,
+            ],
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        bgcolor="#f5f5f5",
+        border_radius=6,
+        border=ft.Border.all(1, "#e0e0e0"),
+        padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+    )
+
     camera_setting_view = ft.Container(
         content=ft.Row(
             [
@@ -2175,8 +2311,9 @@ def create_settings_page(page=None):
                                 content=ft.Column([
                                     ft.Text("PARAMETERS", size=12,
                                             weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
-                                    ft.Row([exp_field,  gain_field], spacing=8),
-                                    ft.Row([fps_field,  trig_dd],   spacing=8),
+                                    ft.Row([exp_field,  gain_field],          spacing=8),
+                                    ft.Row([fps_field,  trig_dd],             spacing=8),
+                                    ft.Row([trig_delay_field], spacing=8),
                                     ft.Row([
                                         _cbtn("Read",  "#607d8b", do_get_params),
                                         _cbtn("Apply", "#43a047", do_set_params),
@@ -2228,8 +2365,658 @@ def create_settings_page(page=None):
                                 bgcolor="#f5f5f5",
                                 alignment=ft.Alignment(0, 0),
                             ),
+                            # ── Action bar ────────────────────────────────────
+                            _cam_action_bar,
                         ],
                         spacing=8,
+                        expand=True,
+                    ),
+                    expand=True,
+                    padding=ft.Padding.all(12),
+                ),
+            ],
+            spacing=0,
+            expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        ),
+        expand=True,
+        bgcolor=theme.BG_COLOR,
+    )
+
+    # ── Modbus RTU panel ──────────────────────────────────────────────────────
+    MODBUS_CFG_PATH = os.path.join(BASE_DIR, "modbus_config.json")
+
+    def _mb_load_cfg():
+        try:
+            with open(MODBUS_CFG_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _mb_save_cfg(cfg):
+        try:
+            with open(MODBUS_CFG_PATH, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
+
+    _mb_cfg = _mb_load_cfg()
+    _mb = {"client": None, "connected": False, "poll_running": False}
+
+    mb_status_dot  = ft.Container(width=10, height=10, border_radius=5, bgcolor="#888888")
+    mb_status_text = ft.Text("Disconnected", size=12, color="#555555")
+
+    def _mb_set_status(text, color, pg=None):
+        mb_status_text.value = text
+        mb_status_dot.bgcolor = color
+        if pg:
+            pg.update()
+
+    # ── Port scan ─────────────────────────────────────────────────────────────
+    mb_port_list      = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+    mb_port_count_lbl = ft.Text("", size=11, color="#888888")
+    _mb_sel_port      = {"value": _mb_cfg.get("port", "")}
+
+    def _scan_mb_ports(pg=None):
+        try:
+            import serial.tools.list_ports as _lp
+            ports = list(_lp.comports())
+        except Exception:
+            ports = []
+        mb_port_list.controls.clear()
+        if not ports:
+            mb_port_list.controls.append(
+                ft.Container(
+                    content=ft.Text("No USB/Serial ports found", size=12, color="#aaaaaa", italic=True),
+                    alignment=ft.Alignment(0, 0), height=50,
+                )
+            )
+            mb_port_count_lbl.value = ""
+        else:
+            mb_port_count_lbl.value = f"{len(ports)} found"
+            for p in ports:
+                pn     = p.device
+                is_sel = _mb_sel_port["value"] == pn
+                mb_port_list.controls.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.USB, size=16,
+                                    color="#1976d2" if is_sel else "#888888"),
+                            ft.Column([
+                                ft.Text(pn, size=12, weight=ft.FontWeight.W_500,
+                                        color=theme.TEXT_PRIMARY),
+                                ft.Text(p.description or "", size=10,
+                                        color=theme.TEXT_SECONDARY),
+                            ], spacing=0, expand=True),
+                            ft.Icon(
+                                ft.Icons.RADIO_BUTTON_CHECKED if is_sel
+                                else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                                color="#1976d2" if is_sel else "#cccccc", size=18,
+                            ),
+                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        bgcolor="#e3f2fd" if is_sel else "#fafafa",
+                        border=ft.Border.all(1.5, "#1976d2" if is_sel else "#e0e0e0"),
+                        border_radius=6,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                        on_click=lambda e, _pn=pn: _select_mb_port(e, _pn),
+                        ink=True,
+                    )
+                )
+        if pg:
+            pg.update()
+
+    def _select_mb_port(e, pn):
+        _mb_sel_port["value"] = pn
+        mb_port_field.value   = pn
+        _scan_mb_ports(e.page)
+
+    # ── Config fields ─────────────────────────────────────────────────────────
+    def _mb_tf(label, val, w):
+        return ft.TextField(
+            label=label, value=str(val), width=w, text_size=12, border_radius=6,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+        )
+
+    def _mb_dd(label, val, w, opts):
+        return ft.Dropdown(
+            label=label, value=str(val), width=w, text_size=12, border_radius=6,
+            options=[ft.dropdown.Option(str(o)) for o in opts],
+            content_padding=ft.Padding.only(left=10, right=0, top=4, bottom=4),
+        )
+
+    mb_port_field     = _mb_tf("Port",       _mb_cfg.get("port", ""),         150)
+    mb_slave_field    = _mb_tf("Slave ID",   _mb_cfg.get("slave_id", 1),      100)
+    mb_baud_dd        = _mb_dd("Baudrate",   _mb_cfg.get("baudrate", 9600),   140,
+                                [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200])
+    mb_bytesize_dd    = _mb_dd("Bytesize",   _mb_cfg.get("bytesize", 8),      110, [7, 8])
+    mb_parity_dd      = _mb_dd("Parity",     _mb_cfg.get("parity", "N"),      100, ["N","E","O"])
+    mb_stopbits_dd    = _mb_dd("Stopbits",   _mb_cfg.get("stopbits", 1),      110, [1, 2])
+    mb_timeout_field  = _mb_tf("Timeout (s)", _mb_cfg.get("timeout", 1),      110)
+
+    # ── Input indicators X1–X8 ────────────────────────────────────────────────
+    NUM_INPUTS  = 8
+    NUM_OUTPUTS = 8
+
+    input_dots   = []
+    input_labels = []
+    for _i in range(NUM_INPUTS):
+        _dot = ft.Container(
+            width=32, height=32, border_radius=16,
+            bgcolor="#e0e0e0",
+            border=ft.Border.all(2, "#bdbdbd"),
+        )
+        _lbl = ft.Text(f"X{_i+1}", size=11, weight=ft.FontWeight.BOLD,
+                       color=theme.TEXT_SECONDARY)
+        input_dots.append(_dot)
+        input_labels.append(_lbl)
+
+    def _update_inputs(bits, pg):
+        for i, dot in enumerate(input_dots):
+            on = bits[i] if i < len(bits) else False
+            dot.bgcolor = "#4caf50" if on else "#e0e0e0"
+            dot.border  = ft.Border.all(2, "#388e3c" if on else "#bdbdbd")
+        pg.update()
+
+    # ── Output buttons Y1–Y8 ─────────────────────────────────────────────────
+    _coil_state = [False] * NUM_OUTPUTS
+
+    def _make_output_row(idx):
+        state_label = ft.Text("OFF", size=11, color="#aaaaaa", width=28)
+
+        def on_toggle(e):
+            val = e.control.value
+            state_label.value = "ON" if val else "OFF"
+            state_label.color = "#43a047" if val else "#aaaaaa"
+            e.page.update()
+            if not _mb["connected"]:
+                return
+            slave = int(mb_slave_field.value or "1")
+            def _do():
+                try:
+                    _mb["client"].write_coil(address=idx, value=val, device_id=slave)
+                    _coil_state[idx] = val
+                except Exception as ex:
+                    print(f"[MB] write_coil Y{idx+1}={'ON' if val else 'OFF'} error: {ex}")
+            e.page.run_thread(_do)
+
+        toggle = ft.Switch(
+            value=False,
+            active_color="#43a047",
+            inactive_thumb_color="#e0e0e0",
+            on_change=on_toggle,
+        )
+        return ft.Row([
+            ft.Text(f"Y{idx+1}", size=12, weight=ft.FontWeight.BOLD,
+                    width=36, color=theme.TEXT_PRIMARY),
+            toggle,
+            state_label,
+        ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    output_rows = [_make_output_row(i) for i in range(NUM_OUTPUTS)]
+
+    # ── Poll thread ───────────────────────────────────────────────────────────
+    def _mb_poll_loop(pg):
+        slave = int(mb_slave_field.value or "1")
+        while _mb["poll_running"] and _mb["connected"]:
+            try:
+                r = _mb["client"].read_holding_registers(address=0, count=NUM_INPUTS, device_id=slave)
+                if not r.isError():
+                    bits = [bool(v) for v in r.registers[:NUM_INPUTS]]
+                    async def _push(b=bits):
+                        _update_inputs(b, pg)
+                    pg.run_task(_push)
+            except Exception as ex:
+                print(f"[MB] poll error: {ex}")
+            time.sleep(0.5)
+
+    # ── Connect / Disconnect ──────────────────────────────────────────────────
+    def do_mb_connect(e):
+        pg   = e.page
+        port = mb_port_field.value.strip()
+        if not port:
+            _mb_set_status("Select or enter a port", "#f44336", pg)
+            return
+        try:
+            baudrate = int(mb_baud_dd.value     or "9600")
+            bytesize = int(mb_bytesize_dd.value or "8")
+            parity   = mb_parity_dd.value       or "N"
+            stopbits = int(mb_stopbits_dd.value or "1")
+            timeout  = float(mb_timeout_field.value or "1")
+            slave_id = int(mb_slave_field.value or "1")
+        except ValueError:
+            _mb_set_status("Invalid config values", "#f44336", pg)
+            return
+        _mb_set_status(f"Connecting {port}...", "#ff9800", pg)
+
+        def _conn():
+            # Close any existing connection first to release the port lock
+            _mb["poll_running"] = False
+            _mb["connected"]    = False
+            if _mb["client"]:
+                try:
+                    _mb["client"].close()
+                except Exception:
+                    pass
+                _mb["client"] = None
+            import time as _time; _time.sleep(0.3)
+            try:
+                from pymodbus.client import ModbusSerialClient
+                cl = ModbusSerialClient(
+                    port=port, baudrate=baudrate, bytesize=bytesize,
+                    parity=parity, stopbits=stopbits, timeout=timeout,
+                )
+                if cl.connect():
+                    _mb["client"]       = cl
+                    _mb["connected"]    = True
+                    _mb["poll_running"] = True
+                    _mb_save_cfg({"port": port, "baudrate": baudrate, "bytesize": bytesize,
+                                  "parity": parity, "stopbits": stopbits,
+                                  "timeout": timeout, "slave_id": slave_id})
+                    _mb_set_status(f"Connected: {port} @ {baudrate}", "#4caf50", pg)
+                    threading.Thread(target=_mb_poll_loop, args=(pg,), daemon=True).start()
+                else:
+                    _mb_set_status(f"Failed to connect: {port}", "#f44336", pg)
+            except Exception as ex:
+                import errno as _errno
+                if hasattr(ex, "errno") and ex.errno == _errno.EWOULDBLOCK:
+                    _mb_set_status(f"Port busy — ปิดโปรแกรมอื่นที่ใช้ {port} ก่อน", "#f44336", pg)
+                else:
+                    _mb_set_status(f"Error: {ex}", "#f44336", pg)
+
+        pg.run_thread(_conn)
+
+    def do_mb_disconnect(e):
+        _mb["poll_running"] = False
+        _mb["connected"]    = False
+        if _mb["client"]:
+            try:
+                _mb["client"].close()
+            except Exception:
+                pass
+            _mb["client"] = None
+        for dot in input_dots:
+            dot.bgcolor = "#e0e0e0"
+            dot.border  = ft.Border.all(2, "#bdbdbd")
+        _mb_set_status("Disconnected", "#888888", e.page)
+
+    def do_mb_read(e):
+        if not _mb["connected"]:
+            return
+        slave = int(mb_slave_field.value or "1")
+        def _read():
+            try:
+                r = _mb["client"].read_holding_registers(address=0, count=NUM_INPUTS, device_id=slave)
+                if not r.isError():
+                    bits = [bool(v) for v in r.registers[:NUM_INPUTS]]
+                    _update_inputs(bits, e.page)
+            except Exception as ex:
+                print(f"[MB] manual read error: {ex}")
+        e.page.run_thread(_read)
+
+    def do_mb_scan(e):
+        _scan_mb_ports(e.page)
+
+    # ── Address scanner ───────────────────────────────────────────────────────
+    addr_scan_col    = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+    addr_scan_status = ft.Text("", size=11, color="#888888")
+
+    SCAN_ADDRESSES = [
+        0, 1, 8, 16, 24, 32,
+        64, 128, 256, 512,
+        0x0400, 0x0480, 0x0500, 0x0800,
+    ]
+
+    def _addr_row(fc, addr, bits, has_on):
+        bit_widgets = []
+        for b in bits[:8]:
+            bit_widgets.append(
+                ft.Container(
+                    width=14, height=14, border_radius=7,
+                    bgcolor="#4caf50" if b else "#e0e0e0",
+                    border=ft.Border.all(1, "#388e3c" if b else "#bdbdbd"),
+                )
+            )
+        return ft.Container(
+            content=ft.Row([
+                ft.Text(f"FC{fc:02d}", size=11, weight=ft.FontWeight.BOLD,
+                        width=36, color="#1976d2"),
+                ft.Text(f"{addr:5d} (0x{addr:04X})", size=11,
+                        width=100, color=theme.TEXT_PRIMARY),
+                ft.Row(bit_widgets, spacing=3),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor="#e8f5e9" if has_on else "#fafafa",
+            border=ft.Border.all(1.5, "#4caf50" if has_on else "#e0e0e0"),
+            border_radius=4,
+            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+        )
+
+    def do_addr_scan(e):
+        if not _mb["connected"]:
+            addr_scan_status.value = "Not connected"
+            e.page.update()
+            return
+        slave = int(mb_slave_field.value or "1")
+        addr_scan_col.controls.clear()
+        addr_scan_status.value = "Scanning..."
+        e.page.update()
+
+        def _scan():
+            results = []
+            for addr in SCAN_ADDRESSES:
+                for fc, fn, is_reg in [
+                    (1,  _mb["client"].read_coils,              False),
+                    (2,  _mb["client"].read_discrete_inputs,    False),
+                    (3,  _mb["client"].read_holding_registers,  True),
+                    (4,  _mb["client"].read_input_registers,    True),
+                ]:
+                    try:
+                        r = fn(address=addr, count=8, device_id=slave)
+                        if not r.isError():
+                            if is_reg:
+                                bits = [bool(v) for v in r.registers[:8]]
+                            else:
+                                bits = list(r.bits[:8])
+                            has_on = any(bits)
+                            results.append((fc, addr, bits, has_on))
+                    except Exception:
+                        pass
+
+            async def _push(res=results):
+                addr_scan_col.controls.clear()
+                if not res:
+                    addr_scan_col.controls.append(
+                        ft.Text("No response from any address", size=11,
+                                color="#aaaaaa", italic=True)
+                    )
+                else:
+                    # แสดง ON ก่อน แล้วตามด้วย OFF
+                    for fc, addr, bits, has_on in sorted(res, key=lambda x: not x[3]):
+                        addr_scan_col.controls.append(
+                            _addr_row(fc, addr, bits, has_on)
+                        )
+                on_count = sum(1 for *_, h in res if h)
+                addr_scan_status.value = (
+                    f"{len(res)} responses — {on_count} with active bits"
+                )
+                e.page.update()
+
+            e.page.run_task(_push)
+
+        e.page.run_thread(_scan)
+
+    _scan_mb_ports()
+
+    def _mb_auto_connect(pg):
+        port = _mb_cfg.get("port", "").strip()
+        if not port:
+            return
+        try:
+            baudrate = int(_mb_cfg.get("baudrate", 9600))
+            bytesize = int(_mb_cfg.get("bytesize", 8))
+            parity   = _mb_cfg.get("parity", "N")
+            stopbits = int(_mb_cfg.get("stopbits", 1))
+            timeout  = float(_mb_cfg.get("timeout", 1))
+            slave_id = int(_mb_cfg.get("slave_id", 1))
+        except (ValueError, TypeError):
+            return
+        _mb_set_status(f"Auto-connecting {port}...", "#ff9800", pg)
+        # Close stale connection if any
+        _mb["poll_running"] = False
+        _mb["connected"]    = False
+        if _mb["client"]:
+            try:
+                _mb["client"].close()
+            except Exception:
+                pass
+            _mb["client"] = None
+        import time as _time; _time.sleep(0.3)
+        try:
+            from pymodbus.client import ModbusSerialClient
+            cl = ModbusSerialClient(
+                port=port, baudrate=baudrate, bytesize=bytesize,
+                parity=parity, stopbits=stopbits, timeout=timeout,
+            )
+            if cl.connect():
+                _mb["client"]       = cl
+                _mb["connected"]    = True
+                _mb["poll_running"] = True
+                _mb_set_status(f"Connected: {port} @ {baudrate}", "#4caf50", pg)
+                threading.Thread(target=_mb_poll_loop, args=(pg,), daemon=True).start()
+            else:
+                _mb_set_status(f"Auto-connect failed: {port}", "#f44336", pg)
+        except Exception as ex:
+            import errno as _errno
+            if hasattr(ex, "errno") and ex.errno == _errno.EWOULDBLOCK:
+                _mb_set_status(f"Port busy: {port} — ปิดโปรแกรมอื่นก่อน", "#f44336", pg)
+            else:
+                _mb_set_status(f"Auto-connect error: {ex}", "#f44336", pg)
+
+    if page:
+        page._mb_auto_connect = lambda: threading.Thread(
+            target=_mb_auto_connect, args=(page,), daemon=True
+        ).start()
+
+    def _mb_write_y1(val: bool):
+        if not _mb.get("connected"):
+            return
+        slave = int(mb_slave_field.value or "1")
+        def _do():
+            try:
+                _mb["client"].write_coil(address=0, value=val, device_id=slave)
+            except Exception as ex:
+                print(f"[MB] Y1 write error: {ex}")
+        if page:
+            page.run_thread(_do)
+
+    def _mb_write_y2(val: bool):
+        if not _mb.get("connected"):
+            return
+        slave = int(mb_slave_field.value or "1")
+        def _do():
+            try:
+                _mb["client"].write_coil(address=1, value=val, device_id=slave)
+            except Exception as ex:
+                print(f"[MB] Y2 write error: {ex}")
+        if page:
+            page.run_thread(_do)
+
+    if page:
+        page._mb_write_y1      = _mb_write_y1
+        page._mb_write_y2      = _mb_write_y2
+        page._stop_cam_preview = _stop_cam_preview
+
+    modbus_view = ft.Container(
+        content=ft.Row(
+            [
+                # ── Left: port scan + config ──────────────────────────────────
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            # Status bar
+                            ft.Container(
+                                content=ft.Row(
+                                    [mb_status_dot, mb_status_text],
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                bgcolor="#f5f5f5", border_radius=6,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                            ),
+                            # Port scan card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Text("USB / SERIAL PORTS", size=12,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=theme.TEXT_PRIMARY),
+                                        ft.Container(expand=True),
+                                        mb_port_count_lbl,
+                                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    ft.Container(
+                                        content=mb_port_list, height=120,
+                                        border=ft.Border.all(1, "#e0e0e0"),
+                                        border_radius=6, padding=6,
+                                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                    ),
+                                    ft.Button(
+                                        "Scan Ports", height=32,
+                                        style=ft.ButtonStyle(
+                                            bgcolor={"": "#607d8b"}, color={"": "#ffffff"},
+                                            shape=ft.RoundedRectangleBorder(radius=4),
+                                            padding=ft.Padding.symmetric(horizontal=12, vertical=4),
+                                            text_style=ft.TextStyle(size=12),
+                                        ),
+                                        on_click=do_mb_scan,
+                                    ),
+                                ], spacing=8),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                            # Config card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("MODBUS RTU CONFIG", size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=theme.TEXT_PRIMARY),
+                                    ft.Row([mb_port_field, mb_slave_field], spacing=8),
+                                    ft.Row([mb_baud_dd, mb_bytesize_dd], spacing=8),
+                                    ft.Row([mb_parity_dd, mb_stopbits_dd,
+                                            mb_timeout_field], spacing=8),
+                                    ft.Row([
+                                        ft.Button(
+                                            "Connect", height=34,
+                                            style=ft.ButtonStyle(
+                                                bgcolor={"": "#1976d2"}, color={"": "#ffffff"},
+                                                shape=ft.RoundedRectangleBorder(radius=4),
+                                                padding=ft.Padding.symmetric(horizontal=14, vertical=4),
+                                            ),
+                                            on_click=do_mb_connect,
+                                        ),
+                                        ft.Button(
+                                            "Disconnect", height=34,
+                                            style=ft.ButtonStyle(
+                                                bgcolor={"": "#d32f2f"}, color={"": "#ffffff"},
+                                                shape=ft.RoundedRectangleBorder(radius=4),
+                                                padding=ft.Padding.symmetric(horizontal=14, vertical=4),
+                                            ),
+                                            on_click=do_mb_disconnect,
+                                        ),
+                                    ], spacing=8),
+                                ], spacing=10),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                            # Address scanner card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Text("ADDRESS SCANNER", size=12,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=theme.TEXT_PRIMARY),
+                                        ft.Container(expand=True),
+                                        addr_scan_status,
+                                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    ft.Text(
+                                        "FC01=Coils  FC02=Discrete Inputs  •  ไฟเขียว=ON",
+                                        size=10, color="#888888",
+                                    ),
+                                    ft.Container(
+                                        content=addr_scan_col,
+                                        height=200,
+                                        border=ft.Border.all(1, "#e0e0e0"),
+                                        border_radius=6, padding=6,
+                                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                    ),
+                                    ft.Button(
+                                        "Scan Addresses", height=32,
+                                        style=ft.ButtonStyle(
+                                            bgcolor={"": "#5c6bc0"}, color={"": "#ffffff"},
+                                            shape=ft.RoundedRectangleBorder(radius=4),
+                                            padding=ft.Padding.symmetric(horizontal=12, vertical=4),
+                                            text_style=ft.TextStyle(size=12),
+                                        ),
+                                        on_click=do_addr_scan,
+                                    ),
+                                ], spacing=8),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(12),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                    width=430,
+                    padding=ft.Padding.all(12),
+                ),
+
+                # ── Right: IO panel ───────────────────────────────────────────
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            # Input status card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Text("INPUT STATUS", size=12,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=theme.TEXT_PRIMARY),
+                                        ft.Container(expand=True),
+                                        ft.Button(
+                                            "Read Inputs", height=30,
+                                            style=ft.ButtonStyle(
+                                                bgcolor={"": "#607d8b"}, color={"": "#ffffff"},
+                                                shape=ft.RoundedRectangleBorder(radius=4),
+                                                padding=ft.Padding.symmetric(horizontal=10, vertical=2),
+                                                text_style=ft.TextStyle(size=11),
+                                            ),
+                                            on_click=do_mb_read,
+                                        ),
+                                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    ft.Row(
+                                        [
+                                            ft.Column(
+                                                [input_dots[i], input_labels[i]],
+                                                spacing=4,
+                                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                            )
+                                            for i in range(NUM_INPUTS)
+                                        ],
+                                        spacing=14,
+                                    ),
+                                ], spacing=14),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(16),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                            # Output control card
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("OUTPUT CONTROL", size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=theme.TEXT_PRIMARY),
+                                    ft.Column(output_rows, spacing=10),
+                                ], spacing=14),
+                                bgcolor="#ffffff", border_radius=8,
+                                border=ft.Border.all(1, "#e0e0e0"),
+                                padding=ft.Padding.all(16),
+                                shadow=ft.BoxShadow(blur_radius=4, color="#00000012",
+                                                    offset=ft.Offset(0, 2)),
+                            ),
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
                         expand=True,
                     ),
                     expand=True,
@@ -2278,25 +3065,31 @@ def create_settings_page(page=None):
         active_tab["value"] = tab
         btn_create.style = tab_style(tab == "create")
         btn_camera.style = tab_style(tab == "camera")
-        content_area.content = create_model_view if tab == "create" else camera_setting_view
-        # Start live preview when entering camera tab (if connected)
+        btn_modbus.style = tab_style(tab == "modbus")
+        if tab == "create":
+            content_area.content = create_model_view
+        elif tab == "camera":
+            content_area.content = camera_setting_view
+        else:
+            content_area.content = modbus_view
         if tab == "camera" and _hik and _hik.connected:
             _start_live(page)
-        # Stop live preview when leaving camera tab
         elif prev_tab == "camera" and tab != "camera":
             _stop_live()
         content_area.update()
         btn_create.update()
         btn_camera.update()
+        btn_modbus.update()
 
     btn_create.on_click = lambda e: show_tab("create")
     btn_camera.on_click = lambda e: show_tab("camera")
+    btn_modbus.on_click = lambda e: show_tab("modbus")
 
     # default view
     content_area.content = create_model_view
 
     #  Full page layout 
-    return ft.Container(
+    settings_container = ft.Container(
         content=ft.Column(
             [
                 # Header
@@ -2319,7 +3112,7 @@ def create_settings_page(page=None):
                 ),
                 # Sub-tab buttons + algorithm selector
                 ft.Container(
-                    content=ft.Row([btn_create, btn_camera, ft.Container(expand=True), ft.Container(content=algo_dropdown, visible=False)], spacing=8,
+                    content=ft.Row([btn_create, btn_camera, btn_modbus, ft.Container(expand=True), ft.Container(content=algo_dropdown, visible=False)], spacing=8,
                                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=ft.Padding.only(left=12, right=12, bottom=8),
                 ),
@@ -2332,3 +3125,12 @@ def create_settings_page(page=None):
         bgcolor=theme.BG_COLOR,
         expand=True,
     )
+
+    def _on_resize(e):
+        _disp["h"] = max(450, int(page.height * 0.72))
+        image_state["act_h"] = _disp["h"]
+
+    if page:
+        page.on_resized = _on_resize
+
+    return settings_container

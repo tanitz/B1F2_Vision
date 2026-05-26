@@ -11,7 +11,12 @@ import numpy as np
 import cv2
 from ctypes import *
 
-MVS_IMPORT   = r"C:\Program Files (x86)\MVS\Development\Samples\Python\MvImport"
+import platform as _platform
+if _platform.system() == "Windows":
+    MVS_IMPORT = r"C:\Program Files (x86)\MVS\Development\Samples\Python\MvImport"
+else:
+    MVS_IMPORT = "/opt/MVS/Samples/64/Python/MvImport"
+
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_PATH = os.path.join(_BASE_DIR, "config", "camera.json")
 
@@ -221,6 +226,7 @@ class HikCamera:
     # ── Disconnect ────────────────────────────────────────────────────────────
 
     def disconnect(self):
+        self._streaming = False
         if self._cam:
             try: self._cam.MV_CC_StopGrabbing()
             except Exception: pass
@@ -402,6 +408,10 @@ class HikCamera:
         if not self._connected:
             return False, "Not connected"
         try:
+            # Always stop first so we start from a clean state
+            try: self._cam.MV_CC_StopGrabbing()
+            except Exception: pass
+            self._streaming = False
             if not preserve_trigger:
                 self._cam.MV_CC_SetEnumValue("TriggerMode", 1 if trigger_on else 0)
                 if trigger_on:
@@ -435,7 +445,11 @@ class HikCamera:
             memset(byref(stOutFrame), 0, sizeof(stOutFrame))
             ret = self._cam.MV_CC_GetImageBuffer(stOutFrame, timeout_ms)
             if ret != MV_OK:
-                if ret != 0x80000007:  # 0x80000007 = MV_E_WAIT (trigger timeout, normal)
+                _silent = {
+                    0x80000007,  # MV_E_WAIT  — trigger timeout (normal)
+                    0x80000003,  # MV_E_CALLORDER / MV_E_NODATA — no frame yet (Linux SDK)
+                }
+                if ret not in _silent:
                     print(f"[HikCamera] get_frame: GetImageBuffer ret=0x{ret:x}")
                 return None
             if not stOutFrame.pBufAddr:

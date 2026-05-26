@@ -12,9 +12,9 @@
         "img/crop_1778925530951.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922657637.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922665707.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922673027.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922657637.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922665707.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922673027.jpg"
       ],
       "crop_roi": [
         361,
@@ -40,22 +40,19 @@
         "img/crop_1778829254197.jpg",
         "img/crop_1778829348468.jpg",
         "img/crop_1778830067863.jpg",
-        "img/crop_1778917061767.jpg",
-        "img/crop_1778917093422.jpg",
-        "img/crop_1778917451698.jpg",
-        "img/crop_1778918063812.jpg",
-        "img/crop_1779441976338.jpg"
+        "img/crop_1779441976338.jpg",
+        "img/crop_1779787990669.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_crop_1779440957148.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1779440957148.jpg"
       ],
       "crop_roi": [
-        729,
-        639,
-        114,
-        250
+        691,
+        640,
+        115,
+        269
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set2\\Image_20260513140129380.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175116255.bmp",
       "search_roi": [
         536,
         501,
@@ -82,25 +79,27 @@
         "img/crop_1778926963928.jpg",
         "img/crop_1778927502065.jpg",
         "img/crop_1778927838368.jpg",
-        "img/crop_1779441316513.jpg"
+        "img/crop_1779441316513.jpg",
+        "img/crop_1779788034364.jpg",
+        "img/crop_1779788436154.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926390575.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926401076.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926410586.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926390575.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926401076.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778926410586.jpg"
       ],
       "crop_roi": [
-        898,
-        743,
-        97,
-        94
+        1037,
+        852,
+        101,
+        158
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set2\\Image_20260522113149799.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175311960.bmp",
       "search_roi": [
         806,
-        714,
-        381,
-        339
+        673,
+        483,
+        367
       ]
     },
     {
@@ -113,23 +112,24 @@
         "img/crop_1778830195752.jpg",
         "img/crop_1778926447244.jpg",
         "img/crop_1778927647960.jpg",
-        "img/crop_1779441755303.jpg"
+        "img/crop_1779441755303.jpg",
+        "img/crop_1779786711688.jpg",
+        "img/crop_1779786858405.jpg",
+        "img/crop_1779788513194.jpg"
       ],
-      "ng_image_paths": [
-        "img/ng_crop_1779443735791.jpg"
-      ],
+      "ng_image_paths": [],
       "crop_roi": [
-        1039,
-        630,
-        201,
-        132
+        1096,
+        718,
+        167,
+        113
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set2\\Image_20260522115025067.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175311960.bmp",
       "search_roi": [
-        795,
-        544,
-        468,
-        312
+        993,
+        581,
+        370,
+        313
       ]
     },
     {
@@ -141,23 +141,23 @@
         "img/crop_1778829744633.jpg",
         "img/crop_1778829931393.jpg",
         "img/crop_1778830226299.jpg",
-        "img/crop_1779441106607.jpg"
+        "img/crop_1779441106607.jpg",
+        "img/crop_1779769266612.jpg",
+        "img/crop_1779787086190.jpg"
       ],
-      "ng_image_paths": [
-        "img/ng_ng_ng_ng_ng_crop_1779423298742.jpg"
-      ],
+      "ng_image_paths": [],
       "crop_roi": [
-        1171,
-        1093,
-        181,
-        137
+        1143,
+        1144,
+        175,
+        133
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set2\\Image_20260522112402815.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512174925798.bmp",
       "search_roi": [
         953,
-        1070,
-        487,
-        292
+        990,
+        587,
+        371
       ]
     },
     {
@@ -169,19 +169,21 @@
         "img/crop_1778829718319.jpg",
         "img/crop_1778829731294.jpg",
         "img/crop_1778830239777.jpg",
-        "img/crop_1778918826436.jpg"
+        "img/crop_1778918826436.jpg",
+        "img/crop_1779786747609.jpg",
+        "img/crop_1779788552262.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_crop_1779441246105.jpg",
-        "img/ng_ng_ng_crop_1779441265061.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1779441246105.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1779441265061.jpg"
       ],
       "crop_roi": [
-        585,
-        1565,
-        77,
-        83
+        602,
+        1630,
+        76,
+        113
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set2\\Image_20260522113123198.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175311960.bmp",
       "search_roi": [
         395,
         1430,
@@ -198,27 +200,30 @@
         "img/crop_1778829707574.jpg",
         "img/crop_1778917367622.jpg",
         "img/crop_1778927441648.jpg",
-        "img/crop_1778928002890.jpg"
+        "img/crop_1778928002890.jpg",
+        "img/crop_1779786792784.jpg",
+        "img/crop_1779786799119.jpg",
+        "img/crop_1779788593303.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922708213.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922716265.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922722138.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922729181.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_crop_1778927930232.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922708213.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922716265.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922722138.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922729181.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778927930232.jpg"
       ],
       "crop_roi": [
-        1430,
-        1677,
-        97,
-        114
+        1057,
+        1870,
+        81,
+        64
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513135716489.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175311960.bmp",
       "search_roi": [
         1335,
-        1654,
-        262,
-        210
+        1548,
+        336,
+        315
       ]
     },
     {
@@ -227,26 +232,30 @@
       "image_path": "img/crop_1778829666980.jpg",
       "image_paths": [
         "img/crop_1778829666980.jpg",
-        "img/crop_1778829702779.jpg"
+        "img/crop_1778829702779.jpg",
+        "img/crop_1779769296949.jpg",
+        "img/crop_1779786784200.jpg",
+        "img/crop_1779788585548.jpg",
+        "img/crop_1779788656905.jpg"
       ],
       "ng_image_paths": [
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922562445.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922594025.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922605517.jpg",
-        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922697837.jpg"
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922562445.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922594025.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922605517.jpg",
+        "img/ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_ng_crop_1778922697837.jpg"
       ],
       "crop_roi": [
-        1430,
-        1677,
-        97,
-        129
+        1054,
+        1865,
+        79,
+        64
       ],
-      "source_image": "E:\\99IS\\B1F2\\image\\B1F2\\image_set1\\Image_20260513140750899.bmp",
+      "source_image": "/home/shap-ubuntu/B1F2_Vision/image/B1F2/image_set1/Image_20260512175311960.bmp",
       "search_roi": [
         901,
-        1714,
-        303,
-        256
+        1613,
+        380,
+        356
       ]
     }
   ]

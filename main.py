@@ -55,6 +55,10 @@ def main(page: ft.Page):
     # แสดงหน้า Home เป็นค่าเริ่มต้น
     on_menu_change(0)
 
+    # Auto-connect Modbus RTU จาก config ที่บันทึกไว้
+    if hasattr(page, "_mb_auto_connect"):
+        page._mb_auto_connect()
+
 
 if __name__ == "__main__":
     ft.run(main, assets_dir="results")

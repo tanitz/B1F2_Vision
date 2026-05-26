@@ -257,14 +257,15 @@ def create_home_page(page=None):
     )
 
     # ── RAW image display ─────────────────────────────────────────────────
-    DISP_H = 684
-    raw_image = ft.Image(src="placeholder.png", visible=False, fit="fill")
+    _disp = {"h": max(500, int((page.height or 1080) * 0.75)) if page else 684}
+
+    raw_image = ft.Image(src="placeholder.png", visible=False, fit="contain", expand=True)
     filename_label = ft.Text("", size=11, color=theme.TEXT_SECONDARY, italic=True)
 
     raw_img_cont = ft.Container(
         content=ft.Stack([raw_image]),
-        height=DISP_H,
-        alignment=ft.Alignment(-1, -1),
+        expand=True,
+        alignment=ft.Alignment(0, 0),
         bgcolor="#f5f5f5",
         border_radius=4,
         border=ft.Border.all(1, "#cccccc"),
@@ -495,7 +496,7 @@ def create_home_page(page=None):
 
         # ── Prepare display data in thread (CPU-bound) ─────────────────────
         h, w = result_img.shape[:2]
-        disp_scale = min(DISP_H / h, 1.0)
+        disp_scale = min(_disp["h"] / h, 1.0)
         dw, dh = int(w * disp_scale), int(h * disp_scale)
         result_disp = cv2.resize(result_img, (dw, dh), interpolation=cv2.INTER_AREA)
         _, buf = cv2.imencode(".jpg", result_disp, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -510,7 +511,7 @@ def create_home_page(page=None):
         for insp_id, sc, crop_cv, is_pass in insp_results:
             if crop_cv is not None:
                 ch, cw = crop_cv.shape[:2]
-                cscale = min(140 / cw, 90 / ch, 1.0)
+                cscale = min(182 / cw, 117 / ch, 1.0)
                 thumb = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)), interpolation=cv2.INTER_AREA)
                 _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
                 prepared.append((insp_id, bytes(cbuf), is_pass))
@@ -561,7 +562,7 @@ def create_home_page(page=None):
             crop_b64 = None
             if crop_cv is not None:
                 ch, cw = crop_cv.shape[:2]
-                cscale = min(140 / cw, 90 / ch, 1.0)
+                cscale = min(182 / cw, 117 / ch, 1.0)
                 thumb  = cv2.resize(crop_cv, (int(cw*cscale), int(ch*cscale)),
                                     interpolation=cv2.INTER_AREA)
                 _, cbuf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 72])
@@ -570,14 +571,15 @@ def create_home_page(page=None):
 
         # ── Push to UI via async task (flushes WebSocket immediately) ─────
         _inspect_done = threading.Event()
+        _result       = {"overall": None}
 
         async def _push(ib=img_bytes, dw_=dw, dh_=dh, ovr=overall,
                         prep=prepared, bc=bcast_cards, el=elapsed_ms):
             data_uri = f"data:image/jpeg;base64,{base64.b64encode(ib).decode()}"
             raw_image.src    = data_uri
-            raw_image.width  = dw_
-            raw_image.height = dh_
-            raw_img_cont.width = dw_
+            raw_image.width  = int(dw_ * 1.6)
+            raw_image.height = int(dh_ * 1.6)
+            raw_img_cont.width = None  # expand to fill panel; image centered by alignment
             raw_image.visible = True
             filename_label.value = img_stem
 
@@ -601,11 +603,11 @@ def create_home_page(page=None):
                 if thumb_b is not None:
                     img_widget = ft.Image(
                         src=f"data:image/jpeg;base64,{base64.b64encode(thumb_b).decode()}",
-                        width=140, height=90, fit="contain",
+                        width=182, height=117, fit="contain",
                     )
                 else:
                     img_widget = ft.Container(
-                        width=140, height=90, bgcolor="#f44336",
+                        width=182, height=117, bgcolor="#f44336",
                         alignment=ft.Alignment(0, 0),
                         content=ft.Text("NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
                     )
@@ -638,10 +640,23 @@ def create_home_page(page=None):
             pg.pubsub.send_all_on_topic("home_update", id(pg))
             pg.pubsub.send_all_on_topic("report_update", None)
             pg.update()
+            _result["overall"] = ovr
             _inspect_done.set()
 
         pg.run_task(_push)
         _inspect_done.wait(timeout=10.0)
+        return _result.get("overall")
+
+    # ── Y1 / Y2 Modbus output helpers ─────────────────────────────────────
+    def _write_y1(val: bool):
+        fn = getattr(page, "_mb_write_y1", None)
+        if callable(fn):
+            fn(val)
+
+    def _write_y2(val: bool):
+        fn = getattr(page, "_mb_write_y2", None)
+        if callable(fn):
+            fn(val)
 
     # ── Camera grab loop ───────────────────────────────────────────────────
     def _start_camera_loop(pg):
@@ -654,10 +669,17 @@ def create_home_page(page=None):
             _set_start_btn(False)
             cam_dot.bgcolor = "#888888"
             cam_label.value = "Camera Off"
+            _write_y2(False)
             pg.pubsub.send_all_on_topic("cam_state", False)
             pg.update()
 
         def _loop():
+            # Stop settings live/grab loops so they don't compete for the camera
+            stop_preview = getattr(pg, "_stop_cam_preview", None)
+            if callable(stop_preview):
+                stop_preview()
+                time.sleep(0.3)  # give the settings loops time to release the frame lock
+
             cfg    = _cam_mod.load_config()
             cam_ip = cfg.get("camera_ip", "").strip()
             if not cam_ip:
@@ -691,8 +713,10 @@ def create_home_page(page=None):
             cam_label.value = f"Connected: {cam_ip}"
             pg.update()
 
+            _write_y2(True)
+
             while grab_state["running"]:
-                frame = _hik.get_frame(timeout_ms=500)
+                frame = _hik.get_frame(timeout_ms=5000)  # must exceed TriggerDelay (2s)
                 if frame is None:
                     continue
                 if not grab_state["running"]:
@@ -701,7 +725,16 @@ def create_home_page(page=None):
                 last_frame["img"]  = frame
                 last_frame["stem"] = stem
                 if model_dropdown.value:
-                    _inspect(frame, stem, pg)
+                    overall = _inspect(frame, stem, pg)
+                    if overall == "PASS" and grab_state["running"]:
+                        _write_y2(False)
+                        time.sleep(2.0)
+                        if grab_state["running"]:
+                            _write_y2(True)
+                    elif overall == "FAIL" and grab_state["running"]:
+                        _write_y1(True)
+                        time.sleep(1.0)
+                        _write_y1(False)
 
             _hik.stop_streaming()
             _hik.disconnect()
@@ -847,11 +880,11 @@ def create_home_page(page=None):
         raw_img_cont.content = ft.Stack([
             ft.Image(
                 src=b["img_src"],
-                width=b["img_w"], height=b["img_h"],
+                width=int(b["img_w"] * 1.6), height=int(b["img_h"] * 1.6),
                 fit="fill", visible=True,
             )
         ])
-        raw_img_cont.width = b["img_w"]
+        raw_img_cont.width = None
 
         count_state["ok"]    = b["ok"]
         count_state["ng"]    = b["ng"]
@@ -871,11 +904,11 @@ def create_home_page(page=None):
             if crop_b64:
                 img_widget = ft.Image(
                     src=f"data:image/jpeg;base64,{crop_b64}",
-                    width=140, height=90, fit="contain",
+                    width=182, height=117, fit="contain",
                 )
             else:
                 img_widget = ft.Container(
-                    width=140, height=90, bgcolor="#f44336",
+                    width=182, height=117, bgcolor="#f44336",
                     alignment=ft.Alignment(0, 0),
                     content=ft.Text("NG", size=20, weight=ft.FontWeight.BOLD, color="#ffffff"),
                 )
@@ -924,7 +957,7 @@ def create_home_page(page=None):
         setattr(page, "_home_refresh_models", _refresh_home_models)
 
     # ── Layout ────────────────────────────────────────────────────────────
-    return ft.Container(
+    home_container = ft.Container(
         content=ft.Column(
             [
                 # Header
@@ -981,3 +1014,12 @@ def create_home_page(page=None):
         bgcolor=theme.BG_COLOR,
         expand=True,
     )
+
+    def _on_resize(e):
+        _disp["h"] = max(500, int(page.height * 0.75))
+
+    if page:
+        page.on_resized = _on_resize
+
+    return home_container
+

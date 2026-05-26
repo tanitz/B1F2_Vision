@@ -1,0 +1,9 @@
+{
+  "port": "/dev/ttyACM1",
+  "baudrate": 9600,
+  "bytesize": 8,
+  "parity": "N",
+  "stopbits": 1,
+  "timeout": 1.0,
+  "slave_id": 1
+}

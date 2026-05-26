@@ -342,21 +342,13 @@ def match_fpm(scene_bgr, templates, score_threshold=0.5, max_overlap=0.3,
             _y0 = max(0, int(round(ptLT[1])))
             _x1 = min(_x0 + iW, scene_g.shape[1])
             _y1 = min(_y0 + iH, scene_g.shape[0])
-            if _x1 > _x0 and _y1 > _y0:
+            if _x1 > _x0 and _y1 > _y0 and validate_ssim:
                 _patch = scene_g[_y0:_y1, _x0:_x1]
-                # Laplacian variance: reject featureless patches
-                _p_var = cv2.Laplacian(_patch, cv2.CV_64F).var()
-                _t_var = cv2.Laplacian(td.pyramid[0], cv2.CV_64F).var()
-                if _t_var > 50 and _p_var < _t_var * 0.15:
+                _tp = td.pyramid[0]
+                _pp = cv2.resize(_patch, (_tp.shape[1], _tp.shape[0]),
+                                 interpolation=cv2.INTER_AREA)
+                if _compute_ssim(_pp, _tp) < 0.20:
                     continue
-                # SSIM: optional — expensive (7 GaussianBlur), skip for real-time
-                if validate_ssim:
-                    _tp = td.pyramid[0]
-                    _pp = cv2.resize(_patch, (_tp.shape[1], _tp.shape[0]),
-                                     interpolation=cv2.INTER_AREA)
-                    _ssim = _compute_ssim(_pp, _tp)
-                    if _ssim < 0.35:
-                        continue
 
             # ── build corner points ──────────────────────────
             ra = -cur_ang * _D2R
