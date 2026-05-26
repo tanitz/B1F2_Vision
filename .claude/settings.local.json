@@ -10,7 +10,30 @@
       "PowerShell(python -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/home.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "PowerShell(python -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/settings.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "PowerShell(e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe -c \"import flet; print\\(flet.__version__\\)\")",
-      "PowerShell(e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/settings.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "PowerShell(e:\\\\99IS\\\\B1F2\\\\.venv\\\\Scripts\\\\python.exe -c \"import ast; ast.parse\\(open\\('e:/99IS/B1F2/pages/settings.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(chmod +x /home/shap-ubuntu/B1F2_Vision/run_web.sh)",
+      "Bash(find /home/shap-ubuntu/B1F2_Vision -name \"activate\" 2>/dev/null; find /home/shap-ubuntu -maxdepth 4 -name \"activate\" 2>/dev/null; which python3)",
+      "Read(//home/shap-ubuntu/**)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(sudo apt install -y python3.12-venv)",
+      "Bash(apt install *)",
+      "Bash(python3 -c \"import ensurepip\")",
+      "Bash(dpkg -l python3-venv)",
+      "Bash(dpkg -l python3.12-venv)",
+      "Bash(pip3 --version)",
+      "Bash(pip --version)",
+      "Bash(python3 -m pip --version)",
+      "Bash(python3 -m virtualenv --version)",
+      "Read(//opt/MVS/**)",
+      "Read(//opt/MVS/lib/**)",
+      "Read(//opt/MVS/include/**)",
+      "Bash(.venv/bin/python3 -c ' *)",
+      "Bash(chmod +x /home/shap-ubuntu/Desktop/B1F2_Vision.desktop)",
+      "Bash(chmod 755 /home/shap-ubuntu/Desktop/B1F2_Vision.desktop)",
+      "Bash(/home/shap-ubuntu/B1F2_Vision/.venv/bin/pip install *)",
+      "Bash(.venv/bin/python3 -c \"import py_compile; py_compile.compile\\('pages/settings.py', doraise=True\\)\")",
+      "Bash(.venv/bin/python3 -c \"import py_compile; py_compile.compile\\('pages/settings.py', doraise=True\\) or py_compile.compile\\('main.py', doraise=True\\)\")",
+      "Bash(.venv/bin/python -c \"import ast; ast.parse\\(open\\('pages/settings.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
